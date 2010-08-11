@@ -89,5 +89,5 @@ instance Trans.MonadIO m => PersistBackend (MongoDBReader m) where
 
     get k = do
         Just doc <- execute $ DB.findOne (selectByKey k) 
-        record <- rightPersistVal (map value doc) (\e -> "get " ++ showPersistKey k ++ ": " ++ e)
+        let record = rightPersistVal (map value doc) (\e -> "get " ++ showPersistKey k ++ ": " ++ e)
         return $ Just record
