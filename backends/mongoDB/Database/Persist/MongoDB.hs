@@ -14,9 +14,10 @@ import Database.Persist
 import Database.Persist.Base
 import Database.Persist.Pool
 import Control.Monad.Trans.Reader
-import Control.Monad.IO.Class (MonadIO (..))
+import qualified Control.Monad.IO.Class as Trans
 import Control.Monad.Trans.Class (MonadTrans (..))
 import "MonadCatchIO-transformers" Control.Monad.CatchIO
+import "mtl" Control.Monad.Trans (MonadIO (..))
 import qualified Database.MongoDB as DB
 import Control.Applicative (Applicative)
 import Control.Monad (forM_, forM)
@@ -28,8 +29,11 @@ type Connection = DB.Connection
 
 -- | A ReaderT monad transformer holding a mongoDB database connection.
 newtype MongoDBReader m a = MongoDBReader (ReaderT Connection m a)
-    deriving (Monad, MonadIO, MonadTrans, MonadCatchIO, Functor,
+    deriving (Monad, Trans.MonadIO, MonadTrans, MonadCatchIO, Functor,
               Applicative)
+
+instance Trans.MonadIO m => MonadIO (MongoDBReader m) where
+    liftIO = Trans.liftIO
 
 runConn conn action =
   DB.runNet $ (flip DB.runConn) conn (DB.useDb (u"test") action)
@@ -56,7 +60,7 @@ fst3 (x, _, _) = x
 toDBValue :: PersistValue -> DB.Value
 toDBValue x = let Right x' = fromPersistValue x in DB.val x' 
 
-instance MonadIO m => PersistBackend (MongoDBReader m) where
+instance Trans.MonadIO m => PersistBackend (MongoDBReader m) where
 -- instance MonadCatchIO m => PersistBackend (MongoDBReader m) where
     initialize _ = return ()
     insert record = do
