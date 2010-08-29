@@ -21,6 +21,7 @@ import Control.Applicative (Applicative)
 -- import qualified Data.ByteString.UTF8 as SU
 import Data.UString (u)
 import qualified Data.CompactString.UTF8 as CS
+import Data.Enumerator hiding (map, length)
 -- import Data.Maybe (fromMaybe, mapMaybe, fromJust)
 
 type Connection = DB.Connection
@@ -55,6 +56,7 @@ fst3 (x, _, _) = x
 filterByKey :: (PersistEntity val) => Key val -> DB.Document
 filterByKey k = [u"_id" DB.=: fromPersistKey k]
 
+selectByKey :: forall val aQueryOrSelection.  (PersistEntity val, DB.Select aQueryOrSelection) => Key val -> EntityDef -> aQueryOrSelection
 selectByKey k entity = DB.select (filterByKey k) (u $ entityName entity)
 
 updateField :: (PersistEntity val) => [Update val] -> DB.Field
@@ -65,10 +67,12 @@ updateField upds = u"$set" DB.=: (
   updateLabels = map (u . persistUpdateToFieldName)
   updateValues = map (pToB . persistUpdateToValue)
 
+uniqSelector :: forall val.  (PersistEntity val) => Unique val -> [DB.Field]
 uniqSelector uniq = zipWith (DB.:=)
   (map u (persistUniqueToFieldNames uniq))
   (map pToB (persistUniqueToValues uniq))
 
+pairFromDocument :: forall val val1.  (PersistEntity val, PersistEntity val1) => [DB.Field] -> Either String (Key val, val1)
 pairFromDocument document = pairFromPersistValues $ map pFromB (map value document)
   where
     pairFromPersistValues (PersistInt64 x:xs) =
@@ -77,10 +81,11 @@ pairFromDocument document = pairFromPersistValues $ map pFromB (map value docume
             Right xs' -> Right (toPersistKey x, xs')
     pairFromPersistValues _ = Left "error in fromPersistValues'"
 
-insertFields t record = zipWith (DB.:=) (toLabels t) (toValues record)
+insertFields :: forall val.  (PersistEntity val) => EntityDef -> val -> [DB.Field]
+insertFields t record = zipWith (DB.:=) (toLabels) (toValues)
   where
-    toLabels t = map (u . fst3) $ entityColumns t
-    toValues record = map (pToB . toPersistValue) (toPersistFields record)
+    toLabels = map (u . fst3) $ entityColumns t
+    toValues = map (pToB . toPersistValue) (toPersistFields record)
 
 instance Trans.MonadIO m => PersistBackend (MongoDBReader m) where
     insert record = do
@@ -94,7 +99,6 @@ instance Trans.MonadIO m => PersistBackend (MongoDBReader m) where
         return ()
       where
         t = entityDef record
-        vals = map (pToB . toPersistValue) (toPersistFields record)
 
     update _ [] = return ()
     update k upds = do
@@ -154,32 +158,43 @@ instance Trans.MonadIO m => PersistBackend (MongoDBReader m) where
       where
         t = entityDef $ dummyFromUnique uniq
 
-    select filts ords limit offset seed0 iter = do
-        let query = DB.Query {
+    count filts = do
+        i <- execute $ DB.count query
+        return $ fromIntegral i
+      where
+        query = DB.select (filterToSelector filts) (u $ entityName t)
+        t = entityDef $ dummyFromFilts filts
+
+    select filts ords limit offset = do
+      Iteratee . start
+      where
+        start x = do
+            cursor <- execute $ DB.find query
+            loop x cursor
+
+        query = DB.Query {
           DB.limit = fromIntegral limit
         , DB.skip  = fromIntegral offset
         , DB.sort  = if null ords then [] else map orderClause ords
         , DB.selection = DB.Select (filterToSelector filts) $ u(entityName t)
         }
-        cursor <- execute $ DB.find query
-        return $ go seed0 cursor
-      where
+
         t = entityDef $ dummyFromFilts filts
         orderClause o = (u(persistOrderToFieldName o))
                         DB.=: (case persistOrderToOrder o of
                                 Asc -> 1
                                 Desc -> -1)
-        go seed curs = do
-          doc <- DB.next curs
-          case doc of
-            Nothing -> return Right seed
-            Just document -> case pairFromDocument document of
-              Left s -> error s
-              Right row -> do
-                eseed <- iter seed row
-                case eseed of
-                    Left seed' -> return $ Left seed'
-                    Right seed' -> go seed' curs
+        loop (Continue k) curs = do
+            doc <- DB.next curs
+            case doc of
+                Nothing -> return $ Continue k
+                Just document -> case pairFromDocument document of
+                        Left s -> return $ Error $ toException
+                                $ PersistMarshalException s
+                        Right row -> do
+                            step <- runIteratee $ k $ Chunks [row]
+                            loop step curs
+        loop step _ = return step
 
 
 filterToSelector :: PersistEntity val => [Filter val] -> DB.Document

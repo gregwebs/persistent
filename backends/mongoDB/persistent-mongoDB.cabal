@@ -21,7 +21,8 @@ library
                      mtl >= 1.1.0.2 && < 1.2,
                      mongoDB >= 0.7.1 && < 0.8,
                      bson >= 0.0.3,
-                     compact-string-fix >= 0.3.1 && < 0.4
+                     compact-string-fix >= 0.3.1 && < 0.4,
+                     enumerator >= 0.4 && < 0.5
     exposed-modules: Database.Persist.MongoDB
     ghc-options:     -Wall
 
