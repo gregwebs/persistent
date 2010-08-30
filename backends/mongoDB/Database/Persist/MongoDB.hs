@@ -34,6 +34,7 @@ newtype MongoDBReader m a = MongoDBReader (ReaderT Connection m a)
 instance Trans.MonadIO m => MonadIO (MongoDBReader m) where
     liftIO = Trans.liftIO
 
+-- TODO: user specifies database!
 runConn conn action =
   DB.runNet $ (flip DB.runConn) conn (DB.useDb (u"test") action)
 
@@ -172,20 +173,20 @@ instance Trans.MonadIO m => PersistBackend (MongoDBReader m) where
             cursor <- execute $ DB.find query
             loop x cursor
 
-        query = DB.Query {
+        query = (DB.select (filterToSelector filts) (u $ entityName t)) {
           DB.limit = fromIntegral limit
         , DB.skip  = fromIntegral offset
         , DB.sort  = if null ords then [] else map orderClause ords
-        , DB.selection = DB.Select (filterToSelector filts) $ u(entityName t)
         }
 
         t = entityDef $ dummyFromFilts filts
         orderClause o = (u(persistOrderToFieldName o))
                         DB.=: (case persistOrderToOrder o of
-                                Asc -> 1
-                                Desc -> -1)
+                                Asc -> 1 :: Int
+                                Desc -> -1 )
+
         loop (Continue k) curs = do
-            doc <- DB.next curs
+            doc <- execute $ DB.next curs
             case doc of
                 Nothing -> return $ Continue k
                 Just document -> case pairFromDocument document of
@@ -196,6 +197,28 @@ instance Trans.MonadIO m => PersistBackend (MongoDBReader m) where
                             loop step curs
         loop step _ = return step
 
+    selectKeys filts =
+        Iteratee . start
+      where
+        start x = do
+            cursor <- execute $ DB.find query
+            loop x cursor
+
+        loop (Continue k) curs = do
+            doc <- execute $ DB.next curs
+            case doc of
+                Nothing -> return $ Continue k
+                Just [_ DB.:= (DB.Int64 i)] -> do
+                    step <- runIteratee $ k $ Chunks [toPersistKey i]
+                    loop step curs
+                Just y -> return $ Error $ toException $ PersistMarshalException
+                        $ "Unexpected in selectKeys: " ++ show y
+        loop step _ = return step
+
+        query = (DB.select (filterToSelector filts) (u $ entityName t)) {
+          DB.project = [u"_id" DB.=: (1 :: Int)]
+        }
+        t = entityDef $ dummyFromFilts filts
 
 filterToSelector :: PersistEntity val => [Filter val] -> DB.Document
 filterToSelector filts = map filterField filts
