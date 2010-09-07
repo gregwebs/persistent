@@ -25,6 +25,7 @@ import Data.Enumerator hiding (map, length)
 -- import Data.Maybe (fromMaybe, mapMaybe, fromJust)
 
 type Connection = DB.Connection
+-- type Connection = Connection { getConn :: DB.Connection }
 
 -- | A ReaderT monad transformer holding a mongoDB database connection.
 newtype MongoDBReader m a = MongoDBReader (ReaderT Connection m a)
@@ -33,6 +34,19 @@ newtype MongoDBReader m a = MongoDBReader (ReaderT Connection m a)
 
 instance Trans.MonadIO m => MonadIO (MongoDBReader m) where
     liftIO = Trans.liftIO
+
+{-withMongoDBConn name connectionSettings action = -}
+  {-DB.runNet $ do-}
+    {-conn <- DB.connect connectionSettings-}
+    {-return Connection-}
+        {-{ getConn = conn-}
+        {-}-}
+    {--- return conn-}
+    {-DB.runConn (DB.useDb (u name) action)-}
+
+-- need to put connection into Monad
+{-runMongoDBConn connectionSettings name action =-}
+  {-(flip DB.runConn) conn $ DB.useDB (u name) action-}
 
 -- TODO: user specifies database!
 runConn conn action =

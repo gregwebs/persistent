@@ -16,6 +16,12 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Reader
 import Monad (unless)
 
+-- these are like HUnit assertions, but with liftIO
+infix 1 @==, ==@
+expected @== actual = liftIO $ expected @?= actual
+expected ==@ actual = liftIO $ expected @=? actual
+
+-- add convenience not equal assertions
 infix 1 /=@, @/=
 
 (/=@) :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
@@ -30,9 +36,6 @@ assertNotEqual preface expected actual =
   where msg = (if null preface then "" else preface ++ "\n") ++
              "expected: " ++ show expected ++ "\n to not equal: " ++ show actual
 
-infix 1 @==, ==@
-expected @== actual = liftIO $ expected @?= actual
-expected ==@ actual = liftIO $ expected @=? actual
 
 mkPersist [$persist|
 Empty
@@ -47,11 +50,10 @@ Pet
     name String
 |]
 
--- connstr = "user=test password=test host=localhost port=5432 dbname=yesod_test"
-
 runConn f = do
     (withSqlitePool "testdb" 1) $ runSqlPool f
-    (withPostgresqlPool "user=test password=test host=localhost port=5432 dbname=test" 1) $ runSqlPool f
+    (withPostgresqlPool "user=test password=test host=localhost port=5432 dbname=yesod_test" 1) $ runSqlPool f
+    withMongoDBConn "yesod_test" (host "127.0.0.1") f
 
 -- TODO: run tests in transaction
 sqliteTest :: SqlPersist IO () -> Assertion
