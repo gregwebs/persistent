@@ -24,6 +24,7 @@ module Database.Persist.Base
     , SomePersistField (..)
     , selectList
     , insertBy
+    , insertBy'
     , checkUnique
     , DeleteCascade (..)
     , deleteCascadeWhere
@@ -36,13 +37,16 @@ import Data.ByteString.Char8 (ByteString, unpack)
 import qualified Data.ByteString.UTF8 as BSU
 import Control.Applicative
 import Data.Typeable (Typeable)
-import Data.Int (Int64)
+import Data.Int (Int8, Int16, Int32, Int64)
+import Data.Word (Word8, Word16, Word32, Word64)
 import Text.Hamlet
 import qualified Data.Text as T
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
 import Data.Enumerator
 import qualified Control.Exception as E
+import Data.Bits (bitSize)
+import Control.Monad (liftM)
 
 -- | A raw value which can be stored in any backend and can be marshalled to
 -- and from a 'PersistField'.
@@ -61,7 +65,8 @@ data PersistValue = PersistString String
 -- datatypes, eg SqlString instead of SqlVarchar. Different SQL databases may
 -- have different translations for these types.
 data SqlType = SqlString
-             | SqlInteger
+             | SqlInt32
+             | SqlInteger -- ^ 8-byte integer; should be renamed SqlInt64
              | SqlReal
              | SqlBool
              | SqlDay
@@ -111,12 +116,56 @@ instance PersistField Int where
     toPersistValue = PersistInt64 . fromIntegral
     fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
     fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
-    sqlType _ = SqlInteger
+    sqlType x = case bitSize x of
+                    32 -> SqlInt32
+                    _ -> SqlInteger
+
+instance PersistField Int8 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
+    sqlType _ = SqlInt32
+
+instance PersistField Int16 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
+    sqlType _ = SqlInt32
+
+instance PersistField Int32 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
+    sqlType _ = SqlInt32
 
 instance PersistField Int64 where
     toPersistValue = PersistInt64 . fromIntegral
     fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
     fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
+    sqlType _ = SqlInteger
+
+instance PersistField Word8 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Wordeger, received: " ++ show x
+    sqlType _ = SqlInt32
+
+instance PersistField Word16 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Wordeger, received: " ++ show x
+    sqlType _ = SqlInt32
+
+instance PersistField Word32 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Wordeger, received: " ++ show x
+    sqlType _ = SqlInteger
+
+instance PersistField Word64 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Wordeger, received: " ++ show x
     sqlType _ = SqlInteger
 
 instance PersistField Double where
@@ -277,8 +326,12 @@ class Monad m => PersistBackend m where
     -- | The total number of records fulfilling the given criterion.
     count :: PersistEntity val => [Filter val] -> m Int
 
+{-# DEPRECATED insertBy "Please use insertBy' instead." #-}
 -- | Try to insert the given entity; if another entity exists with the same
 -- unique key, return that entity; otherwise, return the newly created entity.
+--
+-- This function is deprecated in favor of insertBy'. In the next major
+-- version, this function will be replaced with that one.
 insertBy :: (PersistEntity val, PersistBackend m) => val -> m (Key val, val)
 insertBy val =
     go $ persistUniqueKeys val
@@ -291,6 +344,21 @@ insertBy val =
         case y of
             Nothing -> go xs
             Just z -> return z
+
+-- | This is an improved version of 'insertBy', indicating whether a new value
+-- was inserted. If a duplicate exists in the database, it is returned as
+-- 'Left'. Otherwise, the new 'Key' is returned as 'Right'.
+insertBy' :: (PersistEntity v, PersistBackend m)
+          => v -> m (Either (Key v, v) (Key v))
+insertBy' val =
+    go $ persistUniqueKeys val
+  where
+    go [] = Right `liftM` insert val
+    go (x:xs) = do
+        y <- getBy x
+        case y of
+            Nothing -> go xs
+            Just z -> return $ Left z
 
 -- | Check whether there are any conflicts for unique keys with this entity and
 -- existing entities in the database.

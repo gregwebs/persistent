@@ -16,6 +16,8 @@ import Control.Monad.IO.Class
 
 import Control.Monad.Trans.Reader
 import Monad (unless)
+import Data.Int
+import Data.Word
 
 -- these are like HUnit assertions, but with liftIO
 infix 1 @==, ==@
@@ -39,16 +41,22 @@ assertNotEqual preface expected actual =
 
 
 mkPersist [$persist|
-Empty
+  Empty
 
-Person
+  Person
     name String update Eq Ne Desc
     age Int update "Asc" Desc Lt Eq "some ignored attribute"
     color String null Eq Ne
     PersonNameKey name
-Pet
+  Pet
     owner PersonId
     name String
+  Number
+    int Int
+    int32 Int32
+    word32 Word32
+    int64 Int64
+    word64 Word64
 |]
 
 runConn f = do
@@ -60,18 +68,20 @@ runConn f = do
 sqliteTest :: SqlPersist IO () -> Assertion
 sqliteTest actions = do
   runConn actions
-  runConn $ do cleanDB
+  runConn cleanDB
 
 cleanDB :: SqlPersist IO ()
 cleanDB = do
   deleteWhere ([] :: [Filter Person])
   deleteWhere ([] :: [Filter Pet])
+  deleteWhere ([] :: [Filter Number])
 
 setup :: SqlPersist IO ()
 setup = do
   runMigration $ do
     migrate (undefined :: Person)
     migrate (undefined :: Pet)
+    migrate (undefined :: Number)
   cleanDB
 
 main :: IO ()
@@ -91,6 +101,8 @@ testSuite = testGroup "Database.Persistent"
     , testCase "sqlite update" case_sqliteUpdate
     , testCase "sqlite updateWhere" case_sqliteUpdateWhere
     , testCase "sqlite selectList" case_sqliteSelectList
+    , testCase "large numbers" case_largeNumbers
+    , testCase "insertBy" case_insertBy
     ]
 
                           
@@ -106,6 +118,8 @@ case_sqliteUpdate = sqliteTest _update
 case_sqliteUpdateWhere = sqliteTest _updateWhere
 case_sqliteSelectList = sqliteTest _selectList
 case_sqlitePersistent = sqliteTest _persistent
+case_largeNumbers = sqliteTest _largeNumbers
+case_insertBy = sqliteTest _insertBy
 
 _deleteWhere = do
   key2 <- insert $ Person "Michael2" 90 Nothing
@@ -274,3 +288,27 @@ _persistent = do
   delete micK
   Nothing <- get micK
   return ()
+
+_largeNumbers = do
+    go $ Number maxBound 0 0 0 0
+    go $ Number 0 maxBound 0 0 0
+    go $ Number 0 0 maxBound 0 0
+    go $ Number 0 0 0 maxBound 0
+    go $ Number 0 0 0 0 maxBound
+
+    go $ Number minBound 0 0 0 0
+    go $ Number 0 minBound 0 0 0
+    go $ Number 0 0 minBound 0 0
+    go $ Number 0 0 0 minBound 0
+    go $ Number 0 0 0 0 minBound
+  where
+    go x = do
+        xid <- insert x
+        x' <- get xid
+        liftIO $ x' @?= Just x
+
+_insertBy = do
+    Right _ <- insertBy' $ Person "name" 1 Nothing
+    Left _ <- insertBy' $ Person "name" 1 Nothing
+    Right _ <- insertBy' $ Person "name2" 1 Nothing
+    return ()
