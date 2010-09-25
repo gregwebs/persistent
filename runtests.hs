@@ -65,28 +65,29 @@ runConn f = do
     withMongoDBConn "yesod_test" (host "127.0.0.1") $ runMongoDBConn f
 
 -- TODO: run tests in transaction
-sqliteTest :: SqlPersist IO () -> Assertion
+-- sqliteTest :: SqlPersist IO () -> Assertion
+sqliteTest :: MongoDBReader IO () -> Assertion
 sqliteTest actions = do
   runConn actions
   runConn cleanDB
 
-cleanDB :: SqlPersist IO ()
+-- cleanDB :: SqlPersist IO ()
 cleanDB = do
   deleteWhere ([] :: [Filter Person])
   deleteWhere ([] :: [Filter Pet])
   deleteWhere ([] :: [Filter Number])
 
-setup :: SqlPersist IO ()
+-- setup :: SqlPersist IO ()
 setup = do
-  runMigration $ do
-    migrate (undefined :: Person)
-    migrate (undefined :: Pet)
-    migrate (undefined :: Number)
+  {-runMigration $ do-}
+    {-migrate (undefined :: Person)-}
+    {-migrate (undefined :: Pet)-}
+    {-migrate (undefined :: Number)-}
   cleanDB
 
 main :: IO ()
 main = do
-  runConn setup
+  -- runConn setup
   defaultMain [testSuite]
 
 testSuite :: Test
