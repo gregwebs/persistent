@@ -9,8 +9,9 @@ import Test.Framework.Providers.HUnit
 -- import Test.Framework.Providers.QuickCheck
 import Test.HUnit hiding (Test)
 
-import Database.Persist.Sqlite
-import Database.Persist.Postgresql
+-- import Database.Persist.Sqlite
+-- import Database.Persist.Postgresql
+import Database.Persist.MongoDB
 import Control.Monad.IO.Class
 
 import Control.Monad.Trans.Reader
@@ -51,9 +52,9 @@ Pet
 |]
 
 runConn f = do
-    (withSqlitePool "testdb" 1) $ runSqlPool f
-    (withPostgresqlPool "user=test password=test host=localhost port=5432 dbname=yesod_test" 1) $ runSqlPool f
-    withMongoDBConn "yesod_test" (host "127.0.0.1") f
+    -- (withSqlitePool "testdb" 1) $ runSqlPool f
+--    (withPostgresqlPool "user=test password=test host=localhost port=5432 dbname=yesod_test" 1) $ runSqlPool f
+    withMongoDBConn "yesod_test" (host "127.0.0.1") $ runMongoDBConn f
 
 -- TODO: run tests in transaction
 sqliteTest :: SqlPersist IO () -> Assertion

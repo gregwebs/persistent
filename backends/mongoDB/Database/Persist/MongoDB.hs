@@ -4,12 +4,15 @@
 module Database.Persist.MongoDB
     ( MongoDBReader
     , Connection
+    , withMongoDBConn
+    , runMongoDBConn
+    , host
     , module Database.Persist
     ) where
 
 import Database.Persist
 import Database.Persist.Base
--- import Database.Persist.Pool
+import Database.Persist.GenericSql.Raw (SqlPersist (..))
 import Control.Monad.Trans.Reader
 import qualified Control.Monad.IO.Class as Trans
 import Control.Monad.Trans.Class (MonadTrans (..))
@@ -24,37 +27,38 @@ import qualified Data.CompactString.UTF8 as CS
 import Data.Enumerator hiding (map, length)
 -- import Data.Maybe (fromMaybe, mapMaybe, fromJust)
 
+host = DB.host
 type Connection = DB.Connection
--- type Connection = Connection { getConn :: DB.Connection }
 
 -- | A ReaderT monad transformer holding a mongoDB database connection.
-newtype MongoDBReader m a = MongoDBReader (ReaderT Connection m a)
+newtype MongoDBReader m a = MongoDBReader (ReaderT DB.Connection m a)
     deriving (Monad, Trans.MonadIO, MonadTrans, MonadCatchIO, Functor,
               Applicative)
 
 instance Trans.MonadIO m => MonadIO (MongoDBReader m) where
     liftIO = Trans.liftIO
 
-{-withMongoDBConn name connectionSettings action = -}
-  {-DB.runNet $ do-}
-    {-conn <- DB.connect connectionSettings-}
-    {-return Connection-}
-        {-{ getConn = conn-}
-        {-}-}
-    {--- return conn-}
-    {-DB.runConn (DB.useDb (u name) action)-}
+runMongoDBConn :: MonadCatchIO m => MongoDBReader m a -> DB.Connection -> m a
+runMongoDBConn (MongoDBReader r) conn = do
+  runReaderT r conn
 
--- need to put connection into Monad
-{-runMongoDBConn connectionSettings name action =-}
-  {-(flip DB.runConn) conn $ DB.useDB (u name) action-}
+-- withMongoDBConn :: MonadCatchIO m => String -> DB.Host -> (DB.Connection -> SqlPersist m a) -> m a
+withMongoDBConn dbname connectionSettings connectionReader =
+  DB.runNet $ do
+    conn <- DB.connect connectionSettings
+    connectionReader conn -- $ (flip DB.runConn) conn (DB.useDb dbname)
 
 -- TODO: user specifies database!
 runConn conn action =
   DB.runNet $ (flip DB.runConn) conn (DB.useDb (u"test") action)
 
+{-runConn conn action =-}
+  {-(flip DB.runConn) (getConn conn) (DB.useDb (u getDBname conn) action)-}
+
 execute action = do
   conn <- MongoDBReader ask
   Right (Right result) <- runConn conn action
+  -- Right (Right result) <- conn action
   return result
 
 value :: DB.Field -> DB.Value
