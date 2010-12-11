@@ -3,62 +3,43 @@
 -- | A redis backend for persistent.
 module Database.Persist.MongoDB
     ( MongoDBReader
-    , Connection
     , withMongoDBConn
-    , runMongoDBConn
     , host
+    , HostName
     , module Database.Persist
     ) where
 
 import Database.Persist
 import Database.Persist.Base
-import Database.Persist.GenericSql.Raw (SqlPersist (..))
 import Control.Monad.Trans.Reader
 import qualified Control.Monad.IO.Class as Trans
-import Control.Monad.Trans.Class (MonadTrans (..))
-import "MonadCatchIO-transformers" Control.Monad.CatchIO
-import "mtl" Control.Monad.Trans (MonadIO (..))
 import qualified Database.MongoDB as DB
 import Control.Applicative (Applicative)
--- import Control.Monad (forM_, forM)
--- import qualified Data.ByteString.UTF8 as SU
+import Control.Exception (toException)
 import Data.UString (u)
 import qualified Data.CompactString.UTF8 as CS
 import Data.Enumerator hiding (map, length)
--- import Data.Maybe (fromMaybe, mapMaybe, fromJust)
+import Network.Socket (HostName(..))
 
+-- host "127.0.0.1"
+host :: HostName -> DB.Host
 host = DB.host
-type Connection = DB.Connection
 
--- | A ReaderT monad transformer holding a mongoDB database connection.
-newtype MongoDBReader m a = MongoDBReader (ReaderT DB.Connection m a)
-    deriving (Monad, Trans.MonadIO, MonadTrans, MonadCatchIO, Functor,
-              Applicative)
 
-instance Trans.MonadIO m => MonadIO (MongoDBReader m) where
-    liftIO = Trans.liftIO
+newtype MongoDBReader t m a = MongoDBReader (ReaderT ((DB.ConnPool t), HostName) m a)
+    deriving (Monad, Trans.MonadIO, Functor, Applicative)
 
-runMongoDBConn :: MonadCatchIO m => MongoDBReader m a -> DB.Connection -> m a
-runMongoDBConn (MongoDBReader r) conn = do
-  runReaderT r conn
+withMongoDBConn :: (Trans.MonadIO m, Applicative m) => String -> DB.Host -> ((DB.ConnPool DB.Host, HostName) -> m b) -> m b
+withMongoDBConn dbname host connectionReader = do
+  pool <- DB.newConnPool 1 host
+  connectionReader (pool, dbname)
 
--- withMongoDBConn :: MonadCatchIO m => String -> DB.Host -> (DB.Connection -> SqlPersist m a) -> m a
-withMongoDBConn dbname connectionSettings connectionReader =
-  DB.runNet $ do
-    conn <- DB.connect connectionSettings
-    connectionReader conn -- $ (flip DB.runConn) conn (DB.useDb dbname)
-
--- TODO: user specifies database!
-runConn conn action =
-  DB.runNet $ (flip DB.runConn) conn (DB.useDb (u"test") action)
-
-{-runConn conn action =-}
-  {-(flip DB.runConn) (getConn conn) (DB.useDb (u getDBname conn) action)-}
+runPool pool dbname action =
+  DB.access DB.safe DB.Master pool $ DB.use (DB.Database (u dbname)) action
 
 execute action = do
-  conn <- MongoDBReader ask
-  Right (Right result) <- runConn conn action
-  -- Right (Right result) <- conn action
+  (pool, dbname) <- MongoDBReader ask
+  Right result <- runPool pool dbname action
   return result
 
 value :: DB.Field -> DB.Value
@@ -106,7 +87,7 @@ insertFields t record = zipWith (DB.:=) (toLabels) (toValues)
     toLabels = map (u . fst3) $ entityColumns t
     toValues = map (pToB . toPersistValue) (toPersistFields record)
 
-instance Trans.MonadIO m => PersistBackend (MongoDBReader m) where
+instance (DB.DbAccess m, DB.Server t) => PersistBackend (MongoDBReader t m) where
     insert record = do
         DB.Int64 key <- execute $ DB.insert (u $ entityName t) (insertFields t record)
         return $ toPersistKey (key)
