@@ -19,6 +19,12 @@ import Monad (unless)
 import Data.Int
 import Data.Word
 
+-- these are like HUnit assertions, but with liftIO
+infix 1 @==, ==@
+expected @== actual = liftIO $ expected @?= actual
+expected ==@ actual = liftIO $ expected @=? actual
+
+-- add convenience not equal assertions
 infix 1 /=@, @/=
 
 (/=@) :: (Eq a, Show a, MonadIO m) => a -> a -> m ()
@@ -33,9 +39,6 @@ assertNotEqual preface expected actual =
   where msg = (if null preface then "" else preface ++ "\n") ++
              "expected: " ++ show expected ++ "\n to not equal: " ++ show actual
 
-infix 1 @==, ==@
-expected @== actual = liftIO $ expected @?= actual
-expected ==@ actual = liftIO $ expected @=? actual
 
 data PetType = Cat | Dog
     deriving (Show, Read, Eq)
@@ -63,32 +66,32 @@ share2 mkPersist (mkMigrate "testMigrate") [$persist|
     word64 Word64
 |]
 
--- connstr = "user=test password=test host=localhost port=5432 dbname=yesod_test"
-
 runConn f = do
-    (withSqlitePool "testdb" 1) $ runSqlPool f
-    (withPostgresqlPool "user=test password=test host=localhost port=5432 dbname=test" 1) $ runSqlPool f
+    -- (withSqlitePool "testdb" 1) $ runSqlPool f
+--    (withPostgresqlPool "user=test password=test host=localhost port=5432 dbname=yesod_test" 1) $ runSqlPool f
+    withMongoDBConn "yesod_test" (host "127.0.0.1") $ runMongoDBConn f
 
 -- TODO: run tests in transaction
-sqliteTest :: SqlPersist IO () -> Assertion
+-- sqliteTest :: SqlPersist IO () -> Assertion
+sqliteTest :: MongoDBReader IO () -> Assertion
 sqliteTest actions = do
   runConn actions
   runConn cleanDB
 
-cleanDB :: SqlPersist IO ()
+-- cleanDB :: SqlPersist IO ()
 cleanDB = do
   deleteWhere ([] :: [Filter Pet])
   deleteWhere ([] :: [Filter Person])
   deleteWhere ([] :: [Filter Number])
 
-setup :: SqlPersist IO ()
+-- setup :: SqlPersist IO ()
 setup = do
   runMigration testMigrate
   cleanDB
 
 main :: IO ()
 main = do
-  runConn setup
+  -- runConn setup
   defaultMain [testSuite]
 
 testSuite :: Test
