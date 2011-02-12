@@ -11,6 +11,7 @@ import Test.HUnit hiding (Test)
 
 import Database.Persist.Sqlite
 import Database.Persist.Postgresql
+import Database.Persist.MongoDB
 import Database.Persist.TH
 import Control.Monad.IO.Class
 
@@ -66,19 +67,18 @@ share2 mkPersist (mkMigrate "testMigrate") [$persist|
     word64 Word64
 |]
 
+runConn :: MongoDBReader Host IO () -> IO ()
 runConn f = do
     -- (withSqlitePool "testdb" 1) $ runSqlPool f
 --    (withPostgresqlPool "user=test password=test host=localhost port=5432 dbname=yesod_test" 1) $ runSqlPool f
     withMongoDBConn "yesod_test" (host "127.0.0.1") $ runMongoDBConn f
 
--- TODO: run tests in transaction
 -- sqliteTest :: SqlPersist IO () -> Assertion
-sqliteTest :: MongoDBReader IO () -> Assertion
+sqliteTest :: MongoDBReader Host IO () -> IO ()
 sqliteTest actions = do
   runConn actions
-  runConn cleanDB
+  -- runConn cleanDB
 
--- cleanDB :: SqlPersist IO ()
 cleanDB = do
   deleteWhere ([] :: [Filter Pet])
   deleteWhere ([] :: [Filter Person])
@@ -87,7 +87,7 @@ cleanDB = do
 -- setup :: SqlPersist IO ()
 setup = do
   runMigration testMigrate
-  cleanDB
+  -- cleanDB
 
 main :: IO ()
 main = do
@@ -115,6 +115,7 @@ testSuite = testGroup "Database.Persistent"
 assertEmpty xs    = liftIO $ assertBool "" (null xs)
 assertNotEmpty xs = liftIO $ assertBool "" (not (null xs))
 
+case_sqlitePersistent = sqliteTest _persistent
 case_sqliteDeleteWhere = sqliteTest _deleteWhere
 case_sqliteDeleteBy = sqliteTest _deleteBy
 case_sqliteDelete = sqliteTest _delete
@@ -123,11 +124,11 @@ case_sqliteGetBy = sqliteTest _getBy
 case_sqliteUpdate = sqliteTest _update
 case_sqliteUpdateWhere = sqliteTest _updateWhere
 case_sqliteSelectList = sqliteTest _selectList
-case_sqlitePersistent = sqliteTest _persistent
 case_largeNumbers = sqliteTest _largeNumbers
 case_insertBy = sqliteTest _insertBy
 case_derivePersistField = sqliteTest _derivePersistField
 
+_deleteWhere :: MongoDBReader Host IO ()
 _deleteWhere = do
   key2 <- insert $ Person "Michael2" 90 Nothing
   _    <- insert $ Person "Michael3" 90 Nothing
@@ -144,6 +145,7 @@ _deleteWhere = do
   Just p2_91 <- get key91
   p91 @== p2_91
 
+_deleteBy :: MongoDBReader Host IO ()
 _deleteBy = do
   key2 <- insert $ Person "Michael2" 27 Nothing
   let p3 = Person "Michael3" 27 Nothing
@@ -159,6 +161,7 @@ _deleteBy = do
   Just p32 <- get key3
   p3 @== p32
 
+_delete :: MongoDBReader Host IO ()
 _delete = do
   key2 <- insert $ Person "Michael2" 27 Nothing
   let p3 = Person "Michael3" 27 Nothing
@@ -174,6 +177,7 @@ _delete = do
   p3 @== p
 
 -- also a decent test of get
+_replace :: MongoDBReader Host IO ()
 _replace = do
   key2 <- insert $ Person "Michael2" 27 Nothing
   let p3 = Person "Michael3" 27 Nothing
@@ -188,6 +192,7 @@ _replace = do
   Nothing <- get key2
   return ()
 
+_getBy :: MongoDBReader Host IO ()
 _getBy = do
   let p2 = Person "Michael2" 27 Nothing
   key2 <- insert p2
@@ -197,6 +202,7 @@ _getBy = do
   Nothing <- getBy $ PersonNameKey "Michael3"
   return ()
 
+_update :: MongoDBReader Host IO ()
 _update = do
   let p25 = Person "Michael" 25 Nothing
   key25 <- insert p25
@@ -207,6 +213,7 @@ _update = do
   Just pBlue30 <- get key25
   pBlue30 @== Person "Updated" 30 Nothing
 
+_updateWhere :: MongoDBReader Host IO ()
 _updateWhere = do
   let p1 = Person "Michael" 25 Nothing
   let p2 = Person "Michael2" 25 Nothing
@@ -219,6 +226,7 @@ _updateWhere = do
   Just p <- get key1
   p @== p1
 
+_selectList :: MongoDBReader Host IO ()
 _selectList = do
   let p25 = Person "Michael" 25 Nothing
   let p26 = Person "Michael2" 26 Nothing
@@ -242,6 +250,7 @@ _selectList = do
   ps @== [(key26, p26)]
 
 -- general tests transferred from already exising test file
+_persistent :: MongoDBReader Host IO ()
 _persistent = do
   let mic = Person "Michael" 25 Nothing
   micK <- insert mic
@@ -300,6 +309,7 @@ _persistent = do
   Nothing <- get micK
   return ()
 
+_largeNumbers :: MongoDBReader Host IO ()
 _largeNumbers = do
     go $ Number maxBound 0 0 0 0
     go $ Number 0 maxBound 0 0 0
@@ -318,12 +328,14 @@ _largeNumbers = do
         x' <- get xid
         liftIO $ x' @?= Just x
 
+_insertBy :: MongoDBReader Host IO ()
 _insertBy = do
     Right _ <- insertBy $ Person "name" 1 Nothing
     Left _ <- insertBy $ Person "name" 1 Nothing
     Right _ <- insertBy $ Person "name2" 1 Nothing
     return ()
 
+_derivePersistField :: MongoDBReader Host IO ()
 _derivePersistField = do
     person <- insert $ Person "pet owner" 30 Nothing
     cat <- insert $ Pet person "Mittens" Cat

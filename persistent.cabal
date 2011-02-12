@@ -44,8 +44,8 @@ executable         runtests
     if flag(test)
         Buildable: True
     else
-        Buildable: False
-    hs-source-dirs: ., backends/sqlite, backends/postgresql
+        Buildable: True
+    hs-source-dirs: ., backends/sqlite, backends/postgresql, backends/mongoDB
     main-is:       runtests.hs
     ghc-options:   -Wall
     build-depends:   haskell98,
@@ -67,7 +67,12 @@ executable         runtests
                      neither >= 0.1 && < 0.2,
                      HDBC-postgresql,
                      HDBC,
-                     utf8-string
+
+                     mongoDB >= 0.8.1 && < 0.9,
+                     network >= 2.2.1.7 && <= 2.3,
+                     bson >= 0.0.4 && < 0.1,
+                     compact-string-fix >= 0.3.1 && < 0.4,
+                     utf8-string >= 0.3.4 && < 0.4
     extra-libraries: sqlite3
 
 source-repository head

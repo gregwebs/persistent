@@ -4,8 +4,10 @@
 module Database.Persist.MongoDB
     ( MongoDBReader
     , withMongoDBConn
+    , runMongoDBConn 
     , host
     , HostName
+    , Host
     , module Database.Persist
     ) where
 
@@ -25,6 +27,7 @@ import Network.Socket (HostName(..))
 host :: HostName -> DB.Host
 host = DB.host
 
+type Host = DB.Host
 
 newtype MongoDBReader t m a = MongoDBReader (ReaderT ((DB.ConnPool t), HostName) m a)
     deriving (Monad, Trans.MonadIO, Functor, Applicative)
@@ -33,6 +36,9 @@ withMongoDBConn :: (Trans.MonadIO m, Applicative m) => String -> DB.Host -> ((DB
 withMongoDBConn dbname host connectionReader = do
   pool <- DB.newConnPool 1 host
   connectionReader (pool, dbname)
+
+runMongoDBConn (MongoDBReader r) conn = do
+  runReaderT r conn
 
 runPool pool dbname action =
   DB.access DB.safe DB.Master pool $ DB.use (DB.Database (u dbname)) action
