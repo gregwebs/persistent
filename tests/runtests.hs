@@ -9,10 +9,11 @@ import Test.Framework.Providers.HUnit
 -- import Test.Framework.Providers.QuickCheck
 import Test.HUnit hiding (Test)
 
-import Database.Persist.Sqlite
-import Database.Persist.Postgresql
-import Database.Persist.MongoDB
-import Database.Persist.TH
+import Database.Persist.Base (PersistField(..))
+import Database.Persist.Sqlite hiding (mkPersist)
+import Database.Persist.Postgresql hiding (mkPersist)
+import Database.Persist.MongoDB hiding (mkPersist)
+import Database.Persist.TH (share2, derivePersistField, mkPersist)
 import Control.Monad.IO.Class
 
 import Control.Monad.Trans.Reader

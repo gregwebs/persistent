@@ -5,9 +5,7 @@ module Database.Persist.MongoDB
     ( MongoDBReader
     , withMongoDBConn
     , runMongoDBConn 
-    , host
     , HostName
-    , Host
     , module Database.Persist
     ) where
 
@@ -21,20 +19,15 @@ import Control.Exception (toException)
 import Data.UString (u)
 import qualified Data.CompactString.UTF8 as CS
 import Data.Enumerator hiding (map, length)
-import Network.Socket (HostName(..))
-
--- host "127.0.0.1"
-host :: HostName -> DB.Host
-host = DB.host
-
-type Host = DB.Host
+import Network.Socket (HostName)
+import qualified Network.Abstract(NetworkIO)
 
 newtype MongoDBReader t m a = MongoDBReader (ReaderT ((DB.ConnPool t), HostName) m a)
     deriving (Monad, Trans.MonadIO, Functor, Applicative)
 
-withMongoDBConn :: (Trans.MonadIO m, Applicative m) => String -> DB.Host -> ((DB.ConnPool DB.Host, HostName) -> m b) -> m b
-withMongoDBConn dbname host connectionReader = do
-  pool <- DB.newConnPool 1 host
+withMongoDBConn :: (Network.Abstract.NetworkIO m) => t -> HostName -> ((DB.ConnPool DB.Host, t) -> m b) -> m b
+withMongoDBConn dbname hostname connectionReader = do
+  pool <- DB.newConnPool 1 $ DB.host hostname
   connectionReader (pool, dbname)
 
 runMongoDBConn (MongoDBReader r) conn = do
@@ -93,7 +86,7 @@ insertFields t record = zipWith (DB.:=) (toLabels) (toValues)
     toLabels = map (u . fst3) $ entityColumns t
     toValues = map (pToB . toPersistValue) (toPersistFields record)
 
-instance (DB.DbAccess m, DB.Server t) => PersistBackend (MongoDBReader t m) where
+instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) where
     insert record = do
         DB.Int64 key <- execute $ DB.insert (u $ entityName t) (insertFields t record)
         return $ toPersistKey (key)
