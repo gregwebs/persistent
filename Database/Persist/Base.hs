@@ -6,6 +6,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE OverlappingInstances #-}
 
 -- | This defines the API for performing database actions. There are two levels
 -- to this API: dealing with fields, and dealing with entities. In SQL, a field
@@ -38,6 +39,7 @@ import Control.Applicative
 import Data.Typeable (Typeable)
 import Data.Int (Int8, Int16, Int32, Int64)
 import Data.Word (Word8, Word16, Word32, Word64)
+import qualified Data.Map as M 
 import Text.Blaze (Html, unsafeByteString)
 import Text.Blaze.Renderer.Utf8 (renderHtml)
 import qualified Data.Text as T
@@ -47,7 +49,7 @@ import Data.Enumerator
 import qualified Control.Exception as E
 import Data.Bits (bitSize)
 import Control.Monad (liftM)
-
+import Control.Monad.Instances()
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T
 
@@ -61,8 +63,10 @@ data PersistValue = PersistString String
                   | PersistDay Day
                   | PersistTimeOfDay TimeOfDay
                   | PersistUTCTime UTCTime
+                  | PersistList [PersistValue]
+                  | PersistMap (M.Map String PersistValue)
                   | PersistNull
-    deriving (Show, Read, Eq, Typeable)
+    deriving (Show, Read, Eq, Ord, Typeable)
 
 -- | A SQL data type. Naming attempts to reflect the underlying Haskell
 -- datatypes, eg SqlString instead of SqlVarchar. Different SQL databases may
@@ -98,6 +102,7 @@ instance PersistField String where
     fromPersistValue (PersistUTCTime d) = Right $ show d
     fromPersistValue PersistNull = Left "Unexpected null"
     fromPersistValue (PersistBool b) = Right $ show b
+    fromPersistValue rest = Right $ show rest
     sqlType _ = SqlString
 
 instance PersistField ByteString where
@@ -237,6 +242,20 @@ instance PersistField a => PersistField (Maybe a) where
     sqlType _ = sqlType (error "this is the problem" :: a)
     isNullable _ = True
 
+instance PersistField a => PersistField [a] where
+    toPersistValue = PersistList . Prelude.map toPersistValue
+    fromPersistValue (PersistList xs) = Prelude.mapM fromPersistValue xs
+    fromPersistValue _ = Left "Cannot convert type to List"  --this is a lie, but I'm lazy
+    sqlType _ = sqlType (error "don't panic" :: a)
+    isNullable _ = False
+
+instance PersistField a => PersistField (M.Map String a) where
+    toPersistValue = PersistMap . M.map toPersistValue
+    fromPersistValue (PersistMap m) = Right ( snd (M.mapEither fromPersistValue m))
+    fromPersistValue _ = Left "Cannot convert type to Map"
+    sqlType _ = sqlType (error "error(error[error])" :: a)
+    isNullable _ = False
+ 
 -- | A single database entity. For example, if writing a blog application, a
 -- blog entry would be an entry, containing fields such as title and content.
 class PersistEntity val where

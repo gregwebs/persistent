@@ -13,8 +13,8 @@ homepage:        http://docs.yesodweb.com/persistent/
 
 library
     build-depends:   base >= 4 && < 5,
-                     persistent >= 0.4.0.1,
-                     neither >= 0.1 && <= 0.2,
+                     persistent >= 0.4.3,
+                     neither,
                      template-haskell >= 2.4 && < 2.6,
                      transformers >= 0.2.1 && < 0.3,
                      containers >= 0.2 && < 0.5,

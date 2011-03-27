@@ -18,9 +18,11 @@ import Control.Applicative (Applicative)
 import Control.Exception (toException)
 import Data.UString (u)
 import qualified Data.CompactString.UTF8 as CS
+import qualified Data.Map as M
 import Data.Enumerator hiding (map, length)
 import Network.Socket (HostName)
 import qualified Network.Abstract(NetworkIO)
+import Data.Maybe (catMaybes, fromJust)
 
 newtype MongoDBReader t m a = MongoDBReader (ReaderT ((DB.ConnPool t), HostName) m a)
     deriving (Monad, Trans.MonadIO, Functor, Applicative)
@@ -45,7 +47,7 @@ value :: DB.Field -> DB.Value
 value (_ DB.:= val) = val
 
 rightPersistVals :: (PersistEntity val) => [DB.Value] -> (String -> String) -> val
-rightPersistVals vals err = case fromPersistValues (map pFromB vals) of
+rightPersistVals vals err = case fromPersistValues (catMaybes (map DB.cast' vals)) of
     Left e -> error (err e)
     Right v -> v
 
@@ -64,15 +66,15 @@ updateField upds = u"$set" DB.=: (
   ) 
   where
   updateLabels = map (u . persistUpdateToFieldName)
-  updateValues = map (pToB . persistUpdateToValue)
+  updateValues = map (DB.val . persistUpdateToValue)
 
 uniqSelector :: forall val.  (PersistEntity val) => Unique val -> [DB.Field]
 uniqSelector uniq = zipWith (DB.:=)
   (map u (persistUniqueToFieldNames uniq))
-  (map pToB (persistUniqueToValues uniq))
+  (map DB.val (persistUniqueToValues uniq))
 
 pairFromDocument :: forall val val1.  (PersistEntity val, PersistEntity val1) => [DB.Field] -> Either String (Key val, val1)
-pairFromDocument document = pairFromPersistValues $ map pFromB (map value document)
+pairFromDocument document = pairFromPersistValues $ catMaybes (map DB.cast' (map value document))
   where
     pairFromPersistValues (PersistInt64 x:xs) =
         case fromPersistValues xs of
@@ -84,7 +86,7 @@ insertFields :: forall val.  (PersistEntity val) => EntityDef -> val -> [DB.Fiel
 insertFields t record = zipWith (DB.:=) (toLabels) (toValues)
   where
     toLabels = map (u . fst3) $ entityColumns t
-    toValues = map (pToB . toPersistValue) (toPersistFields record)
+    toValues = map (DB.val . toPersistValue) (toPersistFields record)
 
 instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) where
     insert record = do
@@ -229,8 +231,8 @@ filterField f = case filt of
     name = u $ persistFilterToFieldName f
     filt = persistFilterToFilter f
     filterValue = case persistFilterToValue f of
-      Left v -> pToB v
-      Right vs -> DB.Array (map pToB vs)
+      Left v -> DB.val v
+      Right vs -> DB.Array (map DB.val vs)
 
     showFilter Ne = "$ne"
     showFilter Gt = "$gt"
@@ -241,36 +243,40 @@ filterField f = case filt of
     showFilter NotIn = "$nin"
     showFilter Eq = error ""
 
-pToB :: PersistValue -> DB.Value
-pToB (PersistString s) = DB.String $ u s
--- pToB (PersistByteString bs) = DB.String $ CS.fromByteString bs
-pToB (PersistInt64 i) = DB.Int64 i
-pToB (PersistDouble d) = DB.Float d
-pToB (PersistBool b) = DB.Bool b
--- pToSql (PersistDay d) = H.SqlLocalDate d
--- pToSql (PersistTimeOfDay t) = H.SqlLocalTimeOfDay t
-pToB (PersistUTCTime t) = DB.UTC t
-pToB PersistNull = DB.Null
+mapFromDoc :: DB.Document -> (M.Map String PersistValue)
+mapFromDoc x = M.fromList (map (\f -> (( CS.unpack (DB.label f)), (fromJust .DB.cast') (DB.value f)) ) x)
 
-pFromB :: DB.Value -> PersistValue
-pFromB (DB.String us) = PersistByteString $ CS.toByteString us
-pFromB (DB.Int32 i) = PersistInt64 $ fromIntegral i
-pFromB (DB.Int64 i) = PersistInt64 $ fromIntegral i
-pFromB (DB.Bool b) = PersistBool b
-pFromB (DB.Float b) = PersistDouble b
-pFromB (DB.UTC d) = PersistUTCTime d
-pFromB DB.Null = PersistNull
-pFromB (DB.Bin (DB.Binary b)) = PersistByteString b
-pFromB (DB.Fun (DB.Function f)) = PersistByteString f
-pFromB (DB.Uuid (DB.UUID uid)) = PersistByteString uid
-pFromB (DB.Md5 (DB.MD5 md5)) = PersistByteString md5
-pFromB (DB.UserDef (DB.UserDefined bs)) = PersistByteString bs
-pFromB (DB.RegEx (DB.Regex us1 us2)) =
-  PersistByteString $ CS.toByteString $ CS.append us1 us2
--- pFromB (DB.Doc doc) = map pFromB
--- pFromB (DB.Array xs) = map pFromB xs
--- pFromB (DB.ObjId (DB.Oid i32 i64)) = PersistInt64 $ fromIntegral i64
--- pFromB (DB.JavaScr (DB.Javascript (Document doc) (us))) =
+instance DB.Val PersistValue where
+  val (PersistInt64 x)   = DB.Int64 x
+  val (PersistString x)  = DB.String (CS.pack x)
+  val (PersistDouble x)  = DB.Float x
+  val (PersistBool x)    = DB.Bool x
+  val (PersistUTCTime x) = DB.UTC x
+  val (PersistNull)      = DB.Null
+  val (PersistList l)    = DB.Array (map DB.val l)
+  val (PersistMap  m)    = DB.Doc $ Prelude.map (\(k, v)-> (DB.=:) (CS.pack k) v) (M.toList m)
+  cast' (DB.Float x) = Just (PersistDouble x)
+  cast' (DB.Int32 x)  = Just $ PersistInt64 $ fromIntegral x
+  cast' (DB.Int64 x)  = Just $ PersistInt64 x
+  cast' (DB.String x) = Just $ PersistString (CS.unpack x) 
+  cast' (DB.Bool x)   = Just $ PersistBool x
+  cast' (DB.UTC d)    = Just $ PersistUTCTime d
+  cast' DB.Null       = Just $ PersistNull
+  cast' (DB.Bin (DB.Binary b))   = Just $ PersistByteString b
+  cast' (DB.Fun (DB.Function f)) = Just $ PersistByteString f
+  cast' (DB.Uuid (DB.UUID uid))  = Just $ PersistByteString uid
+  cast' (DB.Md5 (DB.MD5 md5))    = Just $ PersistByteString md5
+  cast' (DB.UserDef (DB.UserDefined bs)) = Just $ PersistByteString bs
+  cast' (DB.RegEx (DB.Regex us1 us2))    = Just $ PersistByteString $ CS.toByteString $ CS.append us1 us2
+  cast' (DB.Doc doc)  = Just $ PersistMap $ mapFromDoc doc
+  cast' (DB.Array xs) = Just $ PersistList $ catMaybes (map DB.cast' xs)
+  cast' _ = Nothing
+-- val (PersistByteString bs) = DB.String $ CS.fromByteString bs
+-- val (PersistDay d) = H.SqlLocalDate d
+-- val (PersistTimeOfDay t) = H.SqlLocalTimeOfDay t
+  -- cast' (DB.ObjId (DB.Oid i32 i64)) = PersistInt64 $ fromIntegral i64
+  -- cast' (DB.JavaScr (DB.Javascript (Document doc) (us))) =
+
 
 dummyFromKey :: Key v -> v
 dummyFromKey _ = error "dummyFromKey"
