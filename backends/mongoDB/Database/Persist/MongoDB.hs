@@ -6,6 +6,7 @@ module Database.Persist.MongoDB
     , withMongoDBConn
     , runMongoDBConn 
     , HostName
+    , Host
     , module Database.Persist
     ) where
 
@@ -14,6 +15,7 @@ import Database.Persist.Base
 import Control.Monad.Trans.Reader
 import qualified Control.Monad.IO.Class as Trans
 import qualified Database.MongoDB as DB
+import Database.MongoDB (Host)
 import Control.Applicative (Applicative)
 import Control.Exception (toException)
 import Data.UString (u)

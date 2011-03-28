@@ -10,8 +10,8 @@ import Test.Framework.Providers.HUnit
 import Test.HUnit hiding (Test)
 
 import Database.Persist.Base (PersistField(..))
-import Database.Persist.Sqlite hiding (mkPersist)
-import Database.Persist.Postgresql hiding (mkPersist)
+import Database.Persist.Sqlite hiding (mkPersist, mkMigrate)
+import Database.Persist.Postgresql hiding (mkPersist, persist)
 import Database.Persist.MongoDB hiding (mkPersist)
 import Database.Persist.TH (share2, derivePersistField, mkPersist)
 import Control.Monad.IO.Class
@@ -75,7 +75,7 @@ runConn :: MongoDBReader Host IO () -> IO ()
 runConn f = do
     -- (withSqlitePool "testdb" 1) $ runSqlPool f
 --    (withPostgresqlPool "user=test password=test host=localhost port=5432 dbname=yesod_test" 1) $ runSqlPool f
-    withMongoDBConn "yesod_test" (host "127.0.0.1") $ runMongoDBConn f
+    withMongoDBConn "yesod_test" "127.0.0.1" $ runMongoDBConn f
 
 -- sqliteTest :: SqlPersist IO () -> Assertion
 sqliteTest :: MongoDBReader Host IO () -> IO ()
