@@ -28,7 +28,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as E
 import qualified Data.Serialize as S
 import qualified Data.ByteString as B
-
+import Debug.Trace
 
 newtype MongoDBReader t m a = MongoDBReader (ReaderT ((DB.ConnPool t), HostName) m a)
     deriving (Monad, Trans.MonadIO, Functor, Applicative)
@@ -38,12 +38,16 @@ withMongoDBConn dbname hostname connectionReader = do
   pool <- DB.newConnPool 1 $ DB.host hostname
   connectionReader (pool, dbname)
 
-runMongoDBConn (MongoDBReader r) conn = do
-  runReaderT r conn
+runMongoDBConn :: MongoDBReader t m a -> (DB.ConnPool t, HostName) -> m a
+runMongoDBConn (MongoDBReader r) conn = do runReaderT r conn
 
+runPool :: (DB.Service s, Trans.MonadIO m) => DB.ConnPool s -> String 
+     -> ReaderT DB.Database (DB.Action m) a -> m (Either DB.Failure a)
 runPool pool dbname action =
   DB.access DB.safe DB.Master pool $ DB.use (DB.Database (u dbname)) action
 
+execute :: (DB.Service s, Trans.MonadIO m) =>
+     ReaderT DB.Database (DB.Action (MongoDBReader s m)) b -> MongoDBReader s m b
 execute action = do
   (pool, dbname) <- MongoDBReader ask
   Right result <- runPool pool dbname action
@@ -53,9 +57,9 @@ value :: DB.Field -> DB.Value
 value (_ DB.:= val) = val
 
 rightPersistVals :: (PersistEntity val) => [DB.Value] -> (String -> String) -> val
-rightPersistVals vals err = case fromPersistValues (catMaybes (map DB.cast' vals)) of
-    Left e -> error (err e)
-    Right v -> v
+rightPersistVals vals err = case fromPersistValues $ catMaybes (map DB.cast' (tail vals)) of
+      Left e -> error (err e)
+      Right v -> v
 
 fst3 :: forall t t1 t2. (t, t1, t2) -> t
 fst3 (x, _, _) = x
@@ -80,13 +84,14 @@ uniqSelector uniq = zipWith (DB.:=)
   (map DB.val (persistUniqueToValues uniq))
 
 pairFromDocument :: forall val val1.  (PersistEntity val, PersistEntity val1) => [DB.Field] -> Either String (Key val, val1)
-pairFromDocument document = pairFromPersistValues $ catMaybes (map DB.cast' (map value document))
+pairFromDocument document = pairFromPersistValues vals 
   where
     pairFromPersistValues (x:xs) =
         case fromPersistValues xs of
             Left e -> Left e
             Right xs' -> Right (toPersistKey x, xs')
     pairFromPersistValues _ = Left "error in fromPersistValues'"
+    vals = catMaybes (map (DB.cast' . value) document)
 
 insertFields :: forall val.  (PersistEntity val) => EntityDef -> val -> [DB.Field]
 insertFields t record = zipWith (DB.:=) (toLabels) (toValues)
@@ -152,7 +157,7 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
             case d of 
               Nothing -> return Nothing
               Just doc -> do 
-                let record = rightPersistVals (map value doc) (\e -> "get " ++ showPersistKey k ++ ": " ++ e)
+                let record = rightPersistVals (map value doc) (\e -> "get " ++ (show d) ++ ": " ++ e)
                 return $ Just record
           where
             t = entityDef $ dummyFromKey k
@@ -294,9 +299,9 @@ instance DB.Val PersistValue where
   cast' (DB.RegEx (DB.Regex us1 us2))    = Just $ PersistByteString $ CS.toByteString $ CS.append us1 us2
   cast' (DB.Doc doc)  = Just $ PersistMap $ mapFromDoc doc
   cast' (DB.Array xs) = Just $ PersistList $ catMaybes (map DB.cast' xs)
+  cast' (DB.ObjId x) = Just $ dbOidToKey x 
   cast' _ = Nothing
   -- val (PersistByteString bs) = DB.String $ CS.fromByteString bs
-  -- cast' (DB.ObjId (DB.Oid i32 i64)) = PersistInt64 $ fromIntegral i64
   -- cast' (DB.JavaScr (DB.Javascript (Document doc) (us))) =
   --val (PersistDay d) = H.SqlLocalDate d
   --val (PersistTimeOfDay t) = H.SqlLocalTimeOfDay t

@@ -18,7 +18,7 @@ import Database.Persist.GenericSql
 import qualified Database.MongoDB as DB
 import Control.Monad.Throw
 
-mkPersist [$persist|
+mkPersist [persist|
 Person 
     name String update Eq Ne Desc In
     age Int update "Asc" Lt "some ignored attribute"
@@ -47,38 +47,47 @@ go = do
     liftIO $ print x' 
       
     deleteWhere ([] :: [Filter Person])
-
+  
+    liftIO $ putStrLn "-- Test 1 --"
     pid <- insert $ Person "Michael" 25 Nothing
     liftIO $ print pid
 
+    liftIO $ putStrLn "-- Test 2 --"
     p1 <- get pid
     liftIO $ print p1
 
+    liftIO $ putStrLn "-- Test 3 --"
     replace pid $ Person "Michael" 26 Nothing
     p2 <- get pid
     liftIO $ print p2
 
+    liftIO $ putStrLn "-- Test 4 --"
     p3 <- selectList [PersonNameEq "Michael"] [] 0 0
     liftIO $ print p3
 
+    liftIO $ putStrLn "-- Test 5 --"
     _ <- insert $ Person "Michael2" 27 Nothing
     deleteWhere [PersonNameEq "Michael2"]
     p4 <- selectList [PersonAgeLt 28] [] 0 0
     liftIO $ print p4
 
+    liftIO $ putStrLn "-- Test 6 --"
     update pid [PersonAge 28]
     p5 <- get pid
     liftIO $ print p5
 
+    liftIO $ putStrLn "-- Test 7 --"
     updateWhere [PersonNameEq "Michael"] [PersonAge 29]
     p6 <- get pid
     if fmap personAge p6 /= Just 29 then error "bug 57" else return ()
     liftIO $ print p6
 
+    liftIO $ putStrLn "-- Test 7 --"
     _ <- insert $ Person "Eliezer" 2 $ Just "blue"
     p7 <- selectList [] [PersonAgeAsc] 0 0
     liftIO $ print p7
 
+    liftIO $ putStrLn "-- Test 8 --"
     _ <- insert $ Person "Abe" 30 $ Just "black"
     p8 <- selectList [PersonAgeLt 30] [PersonNameDesc] 0 0
     liftIO $ print p8
@@ -89,45 +98,57 @@ go = do
     liftIO $ print p9
     -}
 
+    liftIO $ putStrLn "-- Test 10 --"
     p10 <- getBy $ PersonNameKey "Michael"
     liftIO $ print p10
 
+    liftIO $ putStrLn "-- Test 11 --"
     p11 <- selectList [PersonColorEq $ Just "blue"] [] 0 0
     liftIO $ print p11
 
+    liftIO $ putStrLn "-- Test 12 --"
     p12 <- selectList [PersonColorEq Nothing] [] 0 0
     liftIO $ print p12
 
+    liftIO $ putStrLn "-- Test 13 --"
     p13 <- selectList [PersonColorNe Nothing] [] 0 0
     liftIO $ print p13
 
+    liftIO $ putStrLn "-- Test 14 --"
     p14 <- count [PersonColorNe Nothing]
     liftIO $ print p14
 
+    liftIO $ putStrLn "-- Test 15 --"
     delete pid
     plast <- get pid
     liftIO $ print plast
 
+    liftIO $ putStrLn "-- Test 16 --"
     _ <- insert $ Person "Gavriella" 0 Nothing
 
 --    x@(_, Person "Gavriella" 0 Nothing) <-
 --        insertBy $ Person "Gavriella" 1 $ Just "blue"
 --    liftIO $ print x
 
+    liftIO $ putStrLn "-- Test 17 --"
     False <- checkUnique $ Person "Gavriella" 2 Nothing
     True <- checkUnique $ Person "Gavriela (it's misspelled)" 2 Nothing
     return ()
 
+    liftIO $ putStrLn "-- Test 18 --"
     p15 <- selectList [PersonNameIn $ words "Michael Gavriella"] [] 0 0
     liftIO $ print p15
 
+    liftIO $ putStrLn "-- Test 19 --"
     _ <- insert $ Person "Miriam" 23 $ Just "red"
     p16 <- selectList [PersonColorNotIn [Nothing, Just "blue"]] [] 0 0
     liftIO $ print p16
 
+    liftIO $ putStrLn "-- Test 20 --"
     p17 <- selectList [PersonColorGe "blue"] [] 0 0
     liftIO $ print p17
 
+    liftIO $ putStrLn "-- Test 21 --"
     deleteWhere ([] :: [Filter Null])
     _ <- insert $ Null $ Just 5
     _ <- insert $ Null Nothing
