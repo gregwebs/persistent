@@ -15,45 +15,55 @@ module Database.Persist.GenericSql.Internal
     , rawFieldName
     , rawTableName
     , RawName (..)
+    , filterClause
+    , getFieldName
+    , dummyFromFilts
+    , getFiltsValues
+    , orderClause
     ) where
 
-import "MonadCatchIO-transformers" Control.Monad.CatchIO
 import qualified Data.Map as Map
 import Data.IORef
 import Control.Monad.IO.Class
-import Database.Persist.Pool
+import Data.Pool
 import Database.Persist.Base
 import Data.Maybe (fromJust)
 import Control.Arrow
+import Control.Monad.IO.Control (MonadControlIO)
+import Control.Exception.Control (bracket)
+import Database.Persist.Util (nullable)
+import Data.List (intercalate)
+import Data.Text (Text)
 
 type RowPopper m = m (Maybe [PersistValue])
 
 data Connection = Connection
-    { prepare :: String -> IO Statement
-    , insertSql :: RawName -> [RawName] -> Either String (String, String)
-    , stmtMap :: IORef (Map.Map String Statement)
+    { prepare :: Text -> IO Statement
+    , insertSql :: RawName -> [RawName] -> Either Text (Text, Text)
+    , stmtMap :: IORef (Map.Map Text Statement)
     , close :: IO ()
     , migrateSql :: forall v. PersistEntity v
-                 => (String -> IO Statement) -> v
-                 -> IO (Either [String] [(Bool, String)])
-    , begin :: (String -> IO Statement) -> IO ()
-    , commit :: (String -> IO Statement) -> IO ()
-    , rollback :: (String -> IO Statement) -> IO ()
+                 => (Text -> IO Statement) -> v
+                 -> IO (Either [Text] [(Bool, Text)])
+    , begin :: (Text -> IO Statement) -> IO ()
+    , commit :: (Text -> IO Statement) -> IO ()
+    , rollback :: (Text -> IO Statement) -> IO ()
     , escapeName :: RawName -> String
+    , noLimit :: String
     }
 data Statement = Statement
     { finalize :: IO ()
     , reset :: IO ()
     , execute :: [PersistValue] -> IO ()
-    , withStmt :: forall a m. MonadCatchIO m
+    , withStmt :: forall a m. MonadControlIO m
                => [PersistValue] -> (RowPopper m -> m a) -> m a
     }
 
-withSqlPool :: MonadCatchIO m
+withSqlPool :: MonadControlIO m
             => IO Connection -> Int -> (Pool Connection -> m a) -> m a
 withSqlPool mkConn = createPool mkConn close'
 
-withSqlConn :: MonadCatchIO m => IO Connection -> (Connection -> m a) -> m a
+withSqlConn :: MonadControlIO m => IO Connection -> (Connection -> m a) -> m a
 withSqlConn open = bracket (liftIO open) (liftIO . close')
 
 close' :: Connection -> IO ()
@@ -73,7 +83,7 @@ mkColumns val =
     t = entityDef val
     tn = rawTableName t
     go (name, t', as) p =
-        Column name ("null" `elem` as) (sqlType p) (def as) (ref name t' as)
+        Column name (nullable as) (sqlType p) (def as) (ref name t' as)
     def [] = Nothing
     def (('d':'e':'f':'a':'u':'l':'t':'=':d):_) = Just d
     def (_:rest) = def rest
@@ -122,5 +132,118 @@ rawTableName t = RawName $
         Nothing -> entityName t
         Just x -> x
 
-newtype RawName = RawName { unRawName :: String }
+newtype RawName = RawName { unRawName :: String } -- FIXME Text
     deriving (Eq, Ord)
+
+filterClause :: PersistEntity val
+             => Bool -- ^ include table name?
+             -> Connection -> Filter val -> String
+filterClause includeTable conn f =
+    case (isNull, persistFilterToFilter f, varCount) of
+        (True, Eq, _) -> name ++ " IS NULL"
+        (True, Ne, _) -> name ++ " IS NOT NULL"
+        (False, Ne, _) -> concat
+            [ "("
+            , name
+            , " IS NULL OR "
+            , name
+            , "<>?)"
+            ]
+        -- We use 1=2 (and below 1=1) to avoid using TRUE and FALSE, since
+        -- not all databases support those words directly.
+        (_, In, 0) -> "1=2"
+        (False, In, _) -> name ++ " IN " ++ qmarks
+        (True, In, _) -> concat
+            [ "("
+            , name
+            , " IS NULL OR "
+            , name
+            , " IN "
+            , qmarks
+            , ")"
+            ]
+        (_, NotIn, 0) -> "1=1"
+        (False, NotIn, _) -> concat
+            [ "("
+            , name
+            , " IS NULL OR "
+            , name
+            , " NOT IN "
+            , qmarks
+            , ")"
+            ]
+        (True, NotIn, _) -> concat
+            [ "("
+            , name
+            , " IS NOT NULL AND "
+            , name
+            , " NOT IN "
+            , qmarks
+            , ")"
+            ]
+        _ -> name ++ showSqlFilter (persistFilterToFilter f) ++ "?"
+  where
+    isNull = any (== PersistNull)
+           $ either return id
+           $ persistFilterToValue f
+    t = entityDef $ dummyFromFilts [f]
+    name =
+        (if includeTable
+            then (++) (escapeName conn (rawTableName t) ++ ".")
+            else id)
+        $ escapeName conn $ getFieldName t $ persistFilterToFieldName f
+    qmarks = case persistFilterToValue f of
+                Left _ -> "?"
+                Right x ->
+                    let x' = filter (/= PersistNull) x
+                     in '(' : intercalate "," (map (const "?") x') ++ ")"
+    varCount = case persistFilterToValue f of
+                Left _ -> 1
+                Right x -> length x
+    showSqlFilter Eq = "="
+    showSqlFilter Ne = "<>"
+    showSqlFilter Gt = ">"
+    showSqlFilter Lt = "<"
+    showSqlFilter Ge = ">="
+    showSqlFilter Le = "<="
+    showSqlFilter In = " IN "
+    showSqlFilter NotIn = " NOT IN "
+
+dummyFromFilts :: [Filter v] -> v
+dummyFromFilts _ = error "dummyFromFilts"
+
+getFieldName :: EntityDef -> String -> RawName
+getFieldName t s = rawFieldName $ tableColumn t s
+
+tableColumn :: EntityDef -> String -> (String, String, [String])
+tableColumn _ "id" = ("id", "Int64", [])
+tableColumn t s = go $ entityColumns t
+  where
+    go [] = error $ "Unknown table column: " ++ s
+    go ((x, y, z):rest)
+        | x == s = (x, y, z)
+        | otherwise = go rest
+
+getFiltsValues :: PersistEntity val => [Filter val] -> [PersistValue]
+getFiltsValues =
+    concatMap $ go . persistFilterToValue
+  where
+    go (Left PersistNull) = []
+    go (Left x) = [x]
+    go (Right xs) = filter (/= PersistNull) xs
+
+dummyFromOrder :: Order a -> a
+dummyFromOrder _ = undefined
+
+orderClause :: PersistEntity val => Bool -> Connection -> Order val -> String
+orderClause includeTable conn o =
+    name ++ case persistOrderToOrder o of
+                                    Asc -> ""
+                                    Desc -> " DESC"
+  where
+    t = entityDef $ dummyFromOrder o
+    name =
+        (if includeTable
+            then (++) (escapeName conn (rawTableName t) ++ ".")
+            else id)
+        $ escapeName conn $ getFieldName t $ persistOrderToFieldName o

@@ -1,4 +1,4 @@
-{-# LANGUAGE PackageImports #-}
+{-# LANGUAGE OverloadedStrings #-}
 -- | A postgresql backend for persistent.
 module Database.Persist.Postgresql
     ( withPostgresqlPool
@@ -8,7 +8,7 @@ module Database.Persist.Postgresql
     ) where
 
 import Database.Persist
-import Database.Persist.Base
+import Database.Persist.Base hiding (Add, Update)
 import Database.Persist.GenericSql
 import Database.Persist.GenericSql.Internal
 
@@ -17,22 +17,28 @@ import qualified Database.HDBC.PostgreSQL as H
 
 import Control.Monad.IO.Class (MonadIO (..))
 import Data.List (intercalate)
-import "MonadCatchIO-transformers" Control.Monad.CatchIO
 import Data.IORef
 import qualified Data.Map as Map
 import Data.Either (partitionEithers)
 import Control.Arrow
 import Data.List (sort, groupBy)
 import Data.Function (on)
-import qualified Data.ByteString.UTF8 as BSU
+import Control.Monad.IO.Control (MonadControlIO)
 
-withPostgresqlPool :: MonadCatchIO m
+import Data.ByteString (ByteString)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
+import qualified Data.Text.Encoding.Error as T
+import Data.Time.LocalTime (localTimeToUTC, utc)
+import Data.Text (Text, pack, unpack)
+
+withPostgresqlPool :: MonadControlIO m
                    => String
                    -> Int -- ^ number of connections to open
                    -> (ConnectionPool -> m a) -> m a
 withPostgresqlPool s = withSqlPool $ open' s
 
-withPostgresqlConn :: MonadCatchIO m => String -> (Connection -> m a) -> m a
+withPostgresqlConn :: MonadControlIO m => String -> (Connection -> m a) -> m a
 withPostgresqlConn = withSqlConn . open'
 
 open' :: String -> IO Connection
@@ -49,11 +55,12 @@ open' s = do
         , commit = const $ H.commit conn
         , rollback = const $ H.rollback conn
         , escapeName = escape
+        , noLimit = "LIMIT ALL"
         }
 
-prepare' :: H.Connection -> String -> IO Statement
+prepare' :: H.Connection -> Text -> IO Statement
 prepare' conn sql = do
-    stmt <- H.prepare conn sql
+    stmt <- H.prepare conn $ unpack sql
     return Statement
         { finalize = return ()
         , reset = return ()
@@ -61,8 +68,8 @@ prepare' conn sql = do
         , withStmt = withStmt' stmt
         }
 
-insertSql' :: RawName -> [RawName] -> Either String (String, String)
-insertSql' t cols = Left $ concat
+insertSql' :: RawName -> [RawName] -> Either Text (Text, Text)
+insertSql' t cols = Left $ pack $ concat
     [ "INSERT INTO "
     , escape t
     , "("
@@ -77,7 +84,7 @@ execute' stmt vals = do
     _ <- H.execute stmt $ map pToSql vals
     return ()
 
-withStmt' :: MonadCatchIO m
+withStmt' :: MonadControlIO m
           => H.Statement
           -> [PersistValue]
           -> (RowPopper m -> m a)
@@ -87,7 +94,7 @@ withStmt' stmt vals f = do
     f $ liftIO $ (fmap . fmap) (map pFromSql) $ H.fetchRow stmt
 
 pToSql :: PersistValue -> H.SqlValue
-pToSql (PersistString s) = H.SqlString s
+pToSql (PersistText t) = H.SqlString $ unpack t
 pToSql (PersistByteString bs) = H.SqlByteString bs
 pToSql (PersistInt64 i) = H.SqlInt64 i
 pToSql (PersistDouble d) = H.SqlDouble d
@@ -96,9 +103,11 @@ pToSql (PersistDay d) = H.SqlLocalDate d
 pToSql (PersistTimeOfDay t) = H.SqlLocalTimeOfDay t
 pToSql (PersistUTCTime t) = H.SqlUTCTime t
 pToSql PersistNull = H.SqlNull
+pToSql (PersistList _) = error "Refusing to serialize a PersistList to a PostgreSQL value"
+pToSql (PersistMap _) = error "Refusing to serialize a PersistMap to a SQLite value"
 
 pFromSql :: H.SqlValue -> PersistValue
-pFromSql (H.SqlString s) = PersistString s
+pFromSql (H.SqlString s) = PersistText $ pack s
 pFromSql (H.SqlByteString bs) = PersistByteString bs
 pFromSql (H.SqlWord32 i) = PersistInt64 $ fromIntegral i
 pFromSql (H.SqlWord64 i) = PersistInt64 $ fromIntegral i
@@ -113,12 +122,13 @@ pFromSql (H.SqlLocalDate d) = PersistDay d
 pFromSql (H.SqlLocalTimeOfDay d) = PersistTimeOfDay d
 pFromSql (H.SqlUTCTime d) = PersistUTCTime d
 pFromSql H.SqlNull = PersistNull
-pFromSql x = PersistString $ H.fromSql x -- FIXME
+pFromSql (H.SqlLocalTime d) = PersistUTCTime $ localTimeToUTC utc d
+pFromSql x = PersistText $ pack $ H.fromSql x -- FIXME
 
 migrate' :: PersistEntity val
-         => (String -> IO Statement)
+         => (Text -> IO Statement)
          -> val
-         -> IO (Either [String] [(Bool, String)])
+         -> IO (Either [Text] [(Bool, Text)])
 migrate' getter val = do
     let name = rawTableName $ entityDef val
     old <- getColumns getter name
@@ -158,21 +168,14 @@ data AlterDB = AddTable String
              | AlterTable RawName AlterTable
 
 -- | Returns all of the columns in the given table currently in the database.
-getColumns :: (String -> IO Statement)
-           -> RawName -> IO [Either String (Either Column UniqueDef)]
+getColumns :: (Text -> IO Statement)
+           -> RawName -> IO [Either Text (Either Column UniqueDef)]
 getColumns getter name = do
-    stmt <- getter $
-                "SELECT column_name,is_nullable,udt_name,column_default " ++
-                "FROM information_schema.columns " ++
-                "WHERE table_name=? AND column_name <> 'id'"
-    cs <- withStmt stmt [PersistString $ unRawName name] helper
-    stmt' <- getter $ concat
-        [ "SELECT constraint_name, column_name "
-        , "FROM information_schema.constraint_column_usage "
-        , "WHERE table_name=? AND column_name <> 'id' "
-        , "ORDER BY constraint_name, column_name"
-        ]
-    us <- withStmt stmt' [PersistString $ unRawName name] helperU
+    stmt <- getter "SELECT column_name,is_nullable,udt_name,column_default FROM information_schema.columns WHERE table_name=? AND column_name <> 'id'"
+    cs <- withStmt stmt [PersistText $ pack $ unRawName name] helper
+    stmt' <- getter
+        "SELECT constraint_name, column_name FROM information_schema.constraint_column_usage WHERE table_name=? AND column_name <> 'id' ORDER BY constraint_name, column_name"
+    us <- withStmt stmt' [PersistText $ pack $ unRawName name] helperU
     return $ cs ++ us
   where
     getAll pop front = do
@@ -180,7 +183,7 @@ getColumns getter name = do
         case x of
             Nothing -> return $ front []
             Just [PersistByteString con, PersistByteString col] ->
-                getAll pop (front . (:) (BSU.toString con, BSU.toString col))
+                getAll pop (front . (:) (bsToChars con, bsToChars col))
             Just _ -> getAll pop front -- FIXME error message?
     helperU pop = do
         rows <- getAll pop id
@@ -220,25 +223,25 @@ getAlters (c1, u1) (c2, u2) =
                             : AddUniqueConstraint name cols
                             : getAltersU news old'
 
-getColumn :: (String -> IO Statement)
+getColumn :: (Text -> IO Statement)
           -> RawName -> [PersistValue]
-          -> IO (Either String Column)
+          -> IO (Either Text Column)
 getColumn getter tname
         [PersistByteString x, PersistByteString y,
          PersistByteString z, d] =
     case d' of
         Left s -> return $ Left s
         Right d'' ->
-            case getType $ BSU.toString z of
+            case getType $ bsToChars z of
                 Left s -> return $ Left s
                 Right t -> do
-                    let cname = RawName $ BSU.toString x
+                    let cname = RawName $ bsToChars x
                     ref <- getRef cname
-                    return $ Right $ Column cname (BSU.toString y == "YES")
+                    return $ Right $ Column cname (bsToChars y == "YES")
                                      t d'' ref
   where
     getRef cname = do
-        let sql = concat
+        let sql = pack $ concat
                 [ "SELECT COUNT(*) FROM "
                 , "information_schema.table_constraints "
                 , "WHERE table_name=? "
@@ -248,25 +251,27 @@ getColumn getter tname
         let ref = refName tname cname
         stmt <- getter sql
         withStmt stmt
-                     [ PersistString $ unRawName tname
-                     , PersistString $ unRawName ref
+                     [ PersistText $ pack $ unRawName tname
+                     , PersistText $ pack $ unRawName ref
                      ] $ \pop -> do
             Just [PersistInt64 i] <- pop
             return $ if i == 0 then Nothing else Just (RawName "", ref)
     d' = case d of
             PersistNull -> Right Nothing
-            PersistByteString a -> Right $ Just $ BSU.toString a
-            _ -> Left $ "Invalid default column: " ++ show d
-    getType "int4" = Right $ SqlInteger
+            PersistByteString a -> Right $ Just $ bsToChars a
+            _ -> Left $ pack $ "Invalid default column: " ++ show d
+    getType "int4" = Right $ SqlInt32
+    getType "int8" = Right $ SqlInteger
     getType "varchar" = Right $ SqlString
     getType "date" = Right $ SqlDay
     getType "bool" = Right $ SqlBool
     getType "timestamp" = Right $ SqlDayTime
     getType "float4" = Right $ SqlReal
+    getType "float8" = Right $ SqlReal
     getType "bytea" = Right $ SqlBlob
-    getType a = Left $ "Unknown type: " ++ a
+    getType a = Left $ pack $ "Unknown type: " ++ a
 getColumn _ _ x =
-    return $ Left $ "Invalid result from information_schema: " ++ show x
+    return $ Left $ pack $ "Invalid result from information_schema: " ++ show x
 
 findAlters :: Column -> [Column] -> ([AlterColumn'], [Column])
 findAlters col@(Column name isNull type_ def ref) cols =
@@ -316,22 +321,23 @@ showColumn (Column n nu t def ref) = concat
 
 showSqlType :: SqlType -> String
 showSqlType SqlString = "VARCHAR"
-showSqlType SqlInteger = "INTEGER"
-showSqlType SqlReal = "REAL"
+showSqlType SqlInt32 = "INT4"
+showSqlType SqlInteger = "INT8"
+showSqlType SqlReal = "DOUBLE PRECISION"
 showSqlType SqlDay = "DATE"
 showSqlType SqlTime = "TIME"
 showSqlType SqlDayTime = "TIMESTAMP"
 showSqlType SqlBlob = "BYTEA"
 showSqlType SqlBool = "BOOLEAN"
 
-showAlterDb :: AlterDB -> (Bool, String)
-showAlterDb (AddTable s) = (False, s)
+showAlterDb :: AlterDB -> (Bool, Text)
+showAlterDb (AddTable s) = (False, pack s)
 showAlterDb (AlterColumn t (c, ac)) =
-    (isUnsafe ac, showAlter t (c, ac))
+    (isUnsafe ac, pack $ showAlter t (c, ac))
   where
     isUnsafe Drop = True
     isUnsafe _ = False
-showAlterDb (AlterTable t at) = (False, showAlterTable t at)
+showAlterDb (AlterTable t at) = (False, pack $ showAlterTable t at)
 
 showAlterTable :: RawName -> AlterTable -> String
 showAlterTable table (AddUniqueConstraint cname cols) = concat
@@ -437,3 +443,6 @@ escape (RawName s) =
     go "" = ""
     go ('"':xs) = "\"\"" ++ go xs
     go (x:xs) = x : go xs
+
+bsToChars :: ByteString -> String
+bsToChars = T.unpack . T.decodeUtf8With T.lenientDecode

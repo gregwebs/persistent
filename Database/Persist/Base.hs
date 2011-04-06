@@ -1,5 +1,4 @@
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -20,6 +19,7 @@ module Database.Persist.Base
     , EntityDef (..)
     , PersistBackend (..)
     , PersistFilter (..)
+    , PersistUpdate (..)
     , PersistOrder (..)
     , SomePersistField (..)
     , selectList
@@ -30,23 +30,29 @@ module Database.Persist.Base
     , PersistException (..)
     ) where
 
-import Language.Haskell.TH.Syntax
 import Data.Time (Day, TimeOfDay, UTCTime)
 import Data.ByteString.Char8 (ByteString, unpack)
-import qualified Data.ByteString.UTF8 as BSU
 import Control.Applicative
 import Data.Typeable (Typeable)
-import Data.Int (Int64)
-import Text.Hamlet
+import Data.Int (Int8, Int16, Int32, Int64)
+import Data.Word (Word8, Word16, Word32, Word64)
+import Text.Blaze (Html, unsafeByteString)
+import Text.Blaze.Renderer.Utf8 (renderHtml)
 import qualified Data.Text as T
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Lazy as L
-import Data.Enumerator
+import Data.Enumerator hiding (consume)
+import Data.Enumerator.List (consume)
 import qualified Control.Exception as E
+import Data.Bits (bitSize)
+import Control.Monad (liftM)
+
+import qualified Data.Text.Encoding as T
+import qualified Data.Text.Encoding.Error as T
 
 -- | A raw value which can be stored in any backend and can be marshalled to
 -- and from a 'PersistField'.
-data PersistValue = PersistString String
+data PersistValue = PersistText T.Text
                   | PersistByteString ByteString
                   | PersistInt64 Int64
                   | PersistDouble Double
@@ -55,13 +61,16 @@ data PersistValue = PersistString String
                   | PersistTimeOfDay TimeOfDay
                   | PersistUTCTime UTCTime
                   | PersistNull
-    deriving (Show, Read, Eq, Typeable)
+                  | PersistList [PersistValue]
+                  | PersistMap [(T.Text, PersistValue)]
+    deriving (Show, Read, Eq, Typeable, Ord)
 
 -- | A SQL data type. Naming attempts to reflect the underlying Haskell
 -- datatypes, eg SqlString instead of SqlVarchar. Different SQL databases may
 -- have different translations for these types.
 data SqlType = SqlString
-             | SqlInteger
+             | SqlInt32
+             | SqlInteger -- ^ FIXME 8-byte integer; should be renamed SqlInt64
              | SqlReal
              | SqlBool
              | SqlDay
@@ -79,9 +88,10 @@ class PersistField a where
     isNullable _ = False
 
 instance PersistField String where
-    toPersistValue = PersistString
-    fromPersistValue (PersistString s) = Right s
-    fromPersistValue (PersistByteString bs) = Right $ BSU.toString bs
+    toPersistValue = PersistText . T.pack
+    fromPersistValue (PersistText s) = Right $ T.unpack s
+    fromPersistValue (PersistByteString bs) =
+        Right $ T.unpack $ T.decodeUtf8With T.lenientDecode bs
     fromPersistValue (PersistInt64 i) = Right $ show i
     fromPersistValue (PersistDouble d) = Right $ show d
     fromPersistValue (PersistDay d) = Right $ show d
@@ -89,17 +99,21 @@ instance PersistField String where
     fromPersistValue (PersistUTCTime d) = Right $ show d
     fromPersistValue PersistNull = Left "Unexpected null"
     fromPersistValue (PersistBool b) = Right $ show b
+    fromPersistValue (PersistList _) = Left "Cannot convert PersistList to String"
+    fromPersistValue (PersistMap _) = Left "Cannot convert PersistMap to String"
     sqlType _ = SqlString
 
 instance PersistField ByteString where
     toPersistValue = PersistByteString
     fromPersistValue (PersistByteString bs) = Right bs
-    fromPersistValue x = BSU.fromString <$> fromPersistValue x
+    fromPersistValue x = T.encodeUtf8 <$> fromPersistValue x
     sqlType _ = SqlBlob
 
 instance PersistField T.Text where
-    toPersistValue = PersistString . T.unpack
-    fromPersistValue = fmap T.pack . fromPersistValue
+    toPersistValue = PersistText
+    fromPersistValue (PersistByteString bs) =
+        Right $ T.decodeUtf8With T.lenientDecode bs
+    fromPersistValue v = fmap T.pack $ fromPersistValue v
     sqlType _ = SqlString
 
 instance PersistField Html where
@@ -111,12 +125,56 @@ instance PersistField Int where
     toPersistValue = PersistInt64 . fromIntegral
     fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
     fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
-    sqlType _ = SqlInteger
+    sqlType x = case bitSize x of
+                    32 -> SqlInt32
+                    _ -> SqlInteger
+
+instance PersistField Int8 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
+    sqlType _ = SqlInt32
+
+instance PersistField Int16 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
+    sqlType _ = SqlInt32
+
+instance PersistField Int32 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
+    sqlType _ = SqlInt32
 
 instance PersistField Int64 where
     toPersistValue = PersistInt64 . fromIntegral
     fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
     fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
+    sqlType _ = SqlInteger
+
+instance PersistField Word8 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Wordeger, received: " ++ show x
+    sqlType _ = SqlInt32
+
+instance PersistField Word16 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Wordeger, received: " ++ show x
+    sqlType _ = SqlInt32
+
+instance PersistField Word32 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Wordeger, received: " ++ show x
+    sqlType _ = SqlInteger
+
+instance PersistField Word64 where
+    toPersistValue = PersistInt64 . fromIntegral
+    fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
+    fromPersistValue x = Left $ "Expected Wordeger, received: " ++ show x
     sqlType _ = SqlInteger
 
 instance PersistField Double where
@@ -135,8 +193,8 @@ instance PersistField Bool where
 instance PersistField Day where
     toPersistValue = PersistDay
     fromPersistValue (PersistDay d) = Right d
-    fromPersistValue x@(PersistString s) =
-        case reads s of
+    fromPersistValue x@(PersistText t) =
+        case reads $ T.unpack t of
             (d, _):_ -> Right d
             _ -> Left $ "Expected Day, received " ++ show x
     fromPersistValue x@(PersistByteString s) =
@@ -149,8 +207,8 @@ instance PersistField Day where
 instance PersistField TimeOfDay where
     toPersistValue = PersistTimeOfDay
     fromPersistValue (PersistTimeOfDay d) = Right d
-    fromPersistValue x@(PersistString s) =
-        case reads s of
+    fromPersistValue x@(PersistText t) =
+        case reads $ T.unpack t of
             (d, _):_ -> Right d
             _ -> Left $ "Expected TimeOfDay, received " ++ show x
     fromPersistValue x@(PersistByteString s) =
@@ -163,8 +221,8 @@ instance PersistField TimeOfDay where
 instance PersistField UTCTime where
     toPersistValue = PersistUTCTime
     fromPersistValue (PersistUTCTime d) = Right d
-    fromPersistValue x@(PersistString s) =
-        case reads s of
+    fromPersistValue x@(PersistText t) =
+        case reads $ T.unpack t of
             (d, _):_ -> Right d
             _ -> Left $ "Expected UTCTime, received " ++ show x
     fromPersistValue x@(PersistByteString s) =
@@ -204,8 +262,8 @@ class PersistEntity val where
     toPersistFields :: val -> [SomePersistField]
     fromPersistValues :: [PersistValue] -> Either String val
     halfDefined :: val
-    toPersistKey :: Int64 -> Key val
-    fromPersistKey :: Key val -> Int64
+    toPersistKey :: PersistValue -> Key val
+    fromPersistKey :: Key val -> PersistValue
     showPersistKey :: Key val -> String
 
     persistFilterToFieldName :: Filter val -> String
@@ -216,6 +274,7 @@ class PersistEntity val where
     persistOrderToOrder :: Order val -> PersistOrder
 
     persistUpdateToFieldName :: Update val -> String
+    persistUpdateToUpdate :: Update val -> PersistUpdate
     persistUpdateToValue :: Update val -> PersistValue
 
     persistUniqueToFieldNames :: Unique val -> [String]
@@ -262,7 +321,8 @@ class Monad m => PersistBackend m where
 
     -- | Get all records matching the given criterion in the specified order.
     -- Returns also the identifiers.
-    select :: PersistEntity val
+    selectEnum
+           :: PersistEntity val
            => [Filter val]
            -> [Order val]
            -> Int -- ^ limit
@@ -277,20 +337,20 @@ class Monad m => PersistBackend m where
     -- | The total number of records fulfilling the given criterion.
     count :: PersistEntity val => [Filter val] -> m Int
 
--- | Try to insert the given entity; if another entity exists with the same
--- unique key, return that entity; otherwise, return the newly created entity.
-insertBy :: (PersistEntity val, PersistBackend m) => val -> m (Key val, val)
+-- | Insert a value, checking for conflicts with any unique constraints.  If a
+-- duplicate exists in the database, it is returned as 'Left'. Otherwise, the
+-- new 'Key' is returned as 'Right'.
+insertBy :: (PersistEntity v, PersistBackend m)
+          => v -> m (Either (Key v, v) (Key v))
 insertBy val =
     go $ persistUniqueKeys val
   where
-    go [] = do
-        key <- insert val
-        return (key, val)
+    go [] = Right `liftM` insert val
     go (x:xs) = do
         y <- getBy x
         case y of
             Nothing -> go xs
-            Just z -> return z
+            Just z -> return $ Left z
 
 -- | Check whether there are any conflicts for unique keys with this entity and
 -- existing entities in the database.
@@ -316,7 +376,7 @@ selectList :: (PersistEntity val, PersistBackend m, Monad m)
            -> Int -- ^ offset
            -> m [(Key val, val)]
 selectList a b c d = do
-    res <- run $ select a b c d ==<< consume
+    res <- run $ selectEnum a b c d ==<< consume
     case res of
         Left e -> error $ show e
         Right x -> return x
@@ -325,40 +385,16 @@ data EntityDef = EntityDef
     { entityName    :: String
     , entityAttribs :: [String]
     , entityColumns :: [(String, String, [String])] -- ^ name, type, attribs
-    , entityUniques :: [(String, [String])] -- ^ name, columns
+    , entityUniques :: [(String, [String])]         -- ^ name, columns
     , entityDerives :: [String]
     }
     deriving Show
 
-instance Lift EntityDef where
-    lift (EntityDef a b c d e) = do
-        x <- [|EntityDef|]
-        a' <- lift a
-        b' <- lift b
-        c' <- lift c
-        d' <- lift d
-        e' <- lift e
-        return $ x `AppE` a' `AppE` b' `AppE` c' `AppE` d' `AppE` e'
-
 data PersistFilter = Eq | Ne | Gt | Lt | Ge | Le | In | NotIn
     deriving (Read, Show)
 
-instance Lift PersistFilter where
-    lift Eq = [|Eq|]
-    lift Ne = [|Ne|]
-    lift Gt = [|Gt|]
-    lift Lt = [|Lt|]
-    lift Ge = [|Ge|]
-    lift Le = [|Le|]
-    lift In = [|In|]
-    lift NotIn = [|NotIn|]
-
 data PersistOrder = Asc | Desc
     deriving (Read, Show)
-
-instance Lift PersistOrder where
-    lift Asc = [|Asc|]
-    lift Desc = [|Desc|]
 
 class PersistEntity a => DeleteCascade a where
     deleteCascade :: PersistBackend m => Key a -> m ()
@@ -379,3 +415,11 @@ deleteCascadeWhere filts = do
 data PersistException = PersistMarshalException String
     deriving (Show, Typeable)
 instance E.Exception PersistException
+
+data PersistUpdate = Update | Add | Subtract | Multiply | Divide
+    deriving (Read, Show)
+
+instance PersistField PersistValue where
+    toPersistValue = id
+    fromPersistValue = Right
+    sqlType _ = SqlInteger -- since PersistValue should only be used like this for keys, which in SQL are Int64
