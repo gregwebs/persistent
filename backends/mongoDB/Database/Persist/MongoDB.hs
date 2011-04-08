@@ -28,7 +28,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as E
 import qualified Data.Serialize as S
 import qualified Data.ByteString as B
-import Debug.Trace (trace, traceShow)
+--import Debug.Trace (trace, traceShow)
 
 newtype MongoDBReader t m a = MongoDBReader (ReaderT ((DB.ConnPool t), HostName) m a)
     deriving (Monad, Trans.MonadIO, Functor, Applicative)
@@ -63,8 +63,7 @@ rightPersistVals vals err = case fromPersistValues stuff of
       Left e -> error (err e)
       Right v -> v
     where 
-      stuff' = mapMaybe DB.cast' (tail vals)
-      stuff = traceShow stuff' stuff'
+      stuff = mapMaybe DB.cast' (tail vals)
 
 fst3 :: forall t t1 t2. (t, t1, t2) -> t
 fst3 (x, _, _) = x
