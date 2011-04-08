@@ -65,6 +65,7 @@ rightPersistVals vals err = case fromPersistValues stuff of
     where 
       stuff' = mapMaybe DB.cast' (tail vals)
       stuff = traceShow stuff' stuff'
+
 fst3 :: forall t t1 t2. (t, t1, t2) -> t
 fst3 (x, _, _) = x
 
@@ -116,8 +117,9 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
 
     update _ [] = return ()
     update k upds =
-        execute $ DB.save (u $ entityName t)
-          ((u"_id" DB.=: (valToDbOid $ fromPersistKey k)) : updateField upds)
+        execute $ DB.modify 
+                     (DB.Select [u"_id" DB.:= (DB.ObjId $ valToDbOid $ fromPersistKey k)]  (u $ entityName t)) 
+                     [ u"$set" DB.=: updateField upds]
       where
         t = entityDef $ dummyFromKey k
 
@@ -126,7 +128,7 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
         execute $ DB.modify DB.Select {
           DB.coll = (u $ entityName t)
         , DB.selector = filterToSelector filts
-        } (updateField upds)
+        } [u"$set" DB.=: updateField upds]
       where
         t = entityDef $ dummyFromFilts filts
 
@@ -306,7 +308,7 @@ instance DB.Val PersistValue where
   cast' (DB.Doc doc)  = Just $ PersistMap $ mapFromDoc doc
   cast' (DB.Array xs) = Just $ PersistList $ mapMaybe DB.cast' xs
   cast' (DB.ObjId x) = Just $ dbOidToKey x 
-  cast' _ = undefined
+--  cast' _ = undefined
   -- cast' (DB.JavaScr (DB.Javascript (Document doc) (us))) =
 
 instance S.Serialize DB.ObjectId where
