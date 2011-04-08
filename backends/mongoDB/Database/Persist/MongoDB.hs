@@ -23,12 +23,12 @@ import qualified Data.CompactString.UTF8 as CS
 import Data.Enumerator hiding (map, length)
 import Network.Socket (HostName)
 import qualified Network.Abstract(NetworkIO)
-import Data.Maybe (catMaybes, fromJust)
+import Data.Maybe (mapMaybe, fromJust)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as E
 import qualified Data.Serialize as S
 import qualified Data.ByteString as B
-import Debug.Trace
+import Debug.Trace (trace, traceShow)
 
 newtype MongoDBReader t m a = MongoDBReader (ReaderT ((DB.ConnPool t), HostName) m a)
     deriving (Monad, Trans.MonadIO, Functor, Applicative)
@@ -39,7 +39,7 @@ withMongoDBConn dbname hostname connectionReader = do
   connectionReader (pool, dbname)
 
 runMongoDBConn :: MongoDBReader t m a -> (DB.ConnPool t, HostName) -> m a
-runMongoDBConn (MongoDBReader r) conn = do runReaderT r conn
+runMongoDBConn (MongoDBReader r) = runReaderT r 
 
 runPool :: (DB.Service s, Trans.MonadIO m) => DB.ConnPool s -> String 
      -> ReaderT DB.Database (DB.Action m) a -> m (Either DB.Failure a)
@@ -50,30 +50,32 @@ execute :: (DB.Service s, Trans.MonadIO m) =>
      ReaderT DB.Database (DB.Action (MongoDBReader s m)) b -> MongoDBReader s m b
 execute action = do
   (pool, dbname) <- MongoDBReader ask
-  Right result <- runPool pool dbname action
-  return result
+  res <-  runPool pool dbname action
+  case res of
+      (Right result) -> return result 
+      (Left x) -> fail (show x)   -- TODO what to put here?
 
 value :: DB.Field -> DB.Value
 value (_ DB.:= val) = val
 
 rightPersistVals :: (PersistEntity val) => [DB.Value] -> (String -> String) -> val
-rightPersistVals vals err = case fromPersistValues $ catMaybes (map DB.cast' (tail vals)) of
+rightPersistVals vals err = case fromPersistValues stuff of
       Left e -> error (err e)
       Right v -> v
-
+    where 
+      stuff' = mapMaybe DB.cast' (tail vals)
+      stuff = traceShow stuff' stuff'
 fst3 :: forall t t1 t2. (t, t1, t2) -> t
 fst3 (x, _, _) = x
 
 filterByKey :: (PersistEntity val) => Key val -> DB.Document
-filterByKey k = [u"_id" DB.=: fromPersistKey k]
+filterByKey k = [u"_id" DB.=: (valToDbOid $ fromPersistKey k)]
 
 selectByKey :: forall val aQueryOrSelection.  (PersistEntity val, DB.Select aQueryOrSelection) => Key val -> EntityDef -> aQueryOrSelection
 selectByKey k entity = DB.select (filterByKey k) (u $ entityName entity)
 
-updateField :: (PersistEntity val) => [Update val] -> DB.Field
-updateField upds = u"$set" DB.=: (
-    zipWith (DB.:=) (updateLabels upds) (updateValues upds)
-  ) 
+updateField :: (PersistEntity val) => [Update val] -> [DB.Field]
+updateField upds = zipWith (DB.:=) (updateLabels upds) (updateValues upds)
   where
   updateLabels = map (u . persistUpdateToFieldName)
   updateValues = map (DB.val . persistUpdateToValue)
@@ -91,7 +93,7 @@ pairFromDocument document = pairFromPersistValues vals
             Left e -> Left e
             Right xs' -> Right (toPersistKey x, xs')
     pairFromPersistValues _ = Left "error in fromPersistValues'"
-    vals = catMaybes (map (DB.cast' . value) document)
+    vals = mapMaybe (DB.cast' . value) document
 
 insertFields :: forall val.  (PersistEntity val) => EntityDef -> val -> [DB.Field]
 insertFields t record = zipWith (DB.:=) (toLabels) (toValues)
@@ -113,18 +115,18 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
         t = entityDef record
 
     update _ [] = return ()
-    update k upds = do
+    update k upds =
         execute $ DB.save (u $ entityName t)
-          [u"_id" DB.=: (fromPersistKey k), updateField upds] 
+          ((u"_id" DB.=: (valToDbOid $ fromPersistKey k)) : updateField upds)
       where
         t = entityDef $ dummyFromKey k
 
     updateWhere _ [] = return ()
-    updateWhere filts upds = do
+    updateWhere filts upds =
         execute $ DB.modify DB.Select {
           DB.coll = (u $ entityName t)
         , DB.selector = filterToSelector filts
-        } [updateField upds]
+        } (updateField upds)
       where
         t = entityDef $ dummyFromFilts filts
 
@@ -180,8 +182,7 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
         query = DB.select (filterToSelector filts) (u $ entityName t)
         t = entityDef $ dummyFromFilts filts
 
-    selectEnum filts ords limit offset = do
-      Iteratee . start
+    selectEnum filts ords limit offset = Iteratee . start
       where
         start x = do
             cursor <- execute $ DB.find query
@@ -274,6 +275,9 @@ keyToDbOid k = case S.decode k of
                   Left s -> error s
                   Right o -> o
 
+valToDbOid :: PersistValue -> DB.ObjectId
+valToDbOid (PersistByteString b) = keyToDbOid b
+
 instance DB.Val PersistValue where
   val (PersistInt64 x)   = DB.Int64 x
   val (PersistText x)    = DB.String (tToCS x)
@@ -281,10 +285,12 @@ instance DB.Val PersistValue where
   val (PersistBool x)    = DB.Bool x
   val (PersistUTCTime x) = DB.UTC x
   val (PersistNull)      = DB.Null
-  val (PersistList l)    = DB.Array (map DB.val l)
-  val (PersistMap  m)    = DB.Doc $ Prelude.map (\(k, v)-> (DB.=:) (tToCS k) v) m
-  val (PersistByteString x) = DB.ObjId $ keyToDbOid x
-  cast' (DB.Float x) = Just (PersistDouble x)
+  val (PersistList l)    = DB.Array $ map DB.val l
+  val (PersistMap  m)    = DB.Doc $ map (\(k, v)-> (DB.=:) (tToCS k) v) m
+  val (PersistByteString x) = DB.String $ CS.fromByteString_ x 
+  val (PersistDay _)        = undefined  
+  val (PersistTimeOfDay _)  = undefined
+  cast' (DB.Float x)  = Just (PersistDouble x)
   cast' (DB.Int32 x)  = Just $ PersistInt64 $ fromIntegral x
   cast' (DB.Int64 x)  = Just $ PersistInt64 x
   cast' (DB.String x) = Just $ PersistText (csToT x) 
@@ -298,13 +304,10 @@ instance DB.Val PersistValue where
   cast' (DB.UserDef (DB.UserDefined bs)) = Just $ PersistByteString bs
   cast' (DB.RegEx (DB.Regex us1 us2))    = Just $ PersistByteString $ CS.toByteString $ CS.append us1 us2
   cast' (DB.Doc doc)  = Just $ PersistMap $ mapFromDoc doc
-  cast' (DB.Array xs) = Just $ PersistList $ catMaybes (map DB.cast' xs)
+  cast' (DB.Array xs) = Just $ PersistList $ mapMaybe DB.cast' xs
   cast' (DB.ObjId x) = Just $ dbOidToKey x 
-  cast' _ = Nothing
-  -- val (PersistByteString bs) = DB.String $ CS.fromByteString bs
+  cast' _ = undefined
   -- cast' (DB.JavaScr (DB.Javascript (Document doc) (us))) =
-  --val (PersistDay d) = H.SqlLocalDate d
-  --val (PersistTimeOfDay t) = H.SqlLocalTimeOfDay t
 
 instance S.Serialize DB.ObjectId where
   put (DB.Oid w1 w2) = do S.put w1

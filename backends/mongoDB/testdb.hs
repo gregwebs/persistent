@@ -20,15 +20,15 @@ import Control.Monad.Throw
 
 mkPersist [persist|
 Person 
-    name String update Eq Ne Desc In
-    age Int update "Asc" Lt "some ignored attribute"
-    color String null Eq Ne NotIn Ge
+    name String Update Eq Ne Desc In
+    age Int Update "Asc" Lt "some ignored attribute"
+    color String Maybe Eq Ne NotIn Ge
     PersonNameKey name
 Pet
     owner PersonId
     name String
 Null
-    field Int null Eq Ne Gt NotIn In
+    field Int Maybe Eq Ne Gt NotIn In
 Table
     table String
 |]
