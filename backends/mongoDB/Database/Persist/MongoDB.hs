@@ -28,7 +28,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as E
 import qualified Data.Serialize as S
 import qualified Data.ByteString as B
---import Debug.Trace (trace, traceShow)
+import Debug.Trace (trace, traceShow)
 
 newtype MongoDBReader t m a = MongoDBReader (ReaderT ((DB.ConnPool t), HostName) m a)
     deriving (Monad, Trans.MonadIO, Functor, Applicative)
@@ -63,7 +63,8 @@ rightPersistVals vals err = case fromPersistValues stuff of
       Left e -> error (err e)
       Right v -> v
     where 
-      stuff = mapMaybe DB.cast' (tail vals)
+      stuff' = mapMaybe DB.cast' (tail vals)
+      stuff = traceShow stuff' stuff'
 
 fst3 :: forall t t1 t2. (t, t1, t2) -> t
 fst3 (x, _, _) = x
@@ -74,11 +75,19 @@ filterByKey k = [u"_id" DB.=: (valToDbOid $ fromPersistKey k)]
 selectByKey :: forall val aQueryOrSelection.  (PersistEntity val, DB.Select aQueryOrSelection) => Key val -> EntityDef -> aQueryOrSelection
 selectByKey k entity = DB.select (filterByKey k) (u $ entityName entity)
 
-updateField :: (PersistEntity val) => [Update val] -> [DB.Field]
-updateField upds = zipWith (DB.:=) (updateLabels upds) (updateValues upds)
-  where
-  updateLabels = map (u . persistUpdateToFieldName)
-  updateValues = map (DB.val . persistUpdateToValue)
+updateFields :: (PersistEntity val) => [Update val] -> [DB.Field]
+updateFields upds = map updateField upds 
+
+updateField :: (PersistEntity val) => Update val -> DB.Field
+updateField upd = (opName upd) DB.:= DB.Doc [( (u $ persistUpdateToFieldName upd) DB.:= (DB.val $ persistUpdateToValue upd))]
+    where 
+      opName x = case persistUpdateToUpdate x of
+                    Update   -> u "$set"
+                    Add      -> u "$inc"
+                    Subtract -> error "not yet"
+                    Multiply -> error "not yet"
+                    Divide   -> error "not yet"
+
 
 uniqSelector :: forall val.  (PersistEntity val) => Unique val -> [DB.Field]
 uniqSelector uniq = zipWith (DB.:=)
@@ -118,7 +127,7 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
     update k upds =
         execute $ DB.modify 
                      (DB.Select [u"_id" DB.:= (DB.ObjId $ valToDbOid $ fromPersistKey k)]  (u $ entityName t)) 
-                     [ u"$set" DB.=: updateField upds]
+                     $ updateFields upds
       where
         t = entityDef $ dummyFromKey k
 
@@ -127,7 +136,7 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
         execute $ DB.modify DB.Select {
           DB.coll = (u $ entityName t)
         , DB.selector = filterToSelector filts
-        } [u"$set" DB.=: updateField upds]
+        } $ updateFields upds
       where
         t = entityDef $ dummyFromFilts filts
 
@@ -160,7 +169,7 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
             case d of 
               Nothing -> return Nothing
               Just doc -> do 
-                let record = rightPersistVals (map value doc) (\e -> "get " ++ (show d) ++ ": " ++ e)
+                let record = rightPersistVals (mapAndSortWith value label doc) (\e -> "get " ++ (show d) ++ ": " ++ e)
                 return $ Just record
           where
             t = entityDef $ dummyFromKey k
@@ -244,7 +253,9 @@ filterField f = case filt of
     Eq -> name DB.:= filterValue
     _  -> name DB.=: [u(showFilter filt) DB.:= filterValue]
   where
-    name = u $ persistFilterToFieldName f
+    name = case (persistFilterToFieldName f) of
+            "id"  -> u "_id"
+            other -> u other
     filt = persistFilterToFilter f
     filterValue = case persistFilterToValue f of
       Left v -> DB.val v
@@ -259,6 +270,10 @@ filterField f = case filt of
     showFilter NotIn = "$nin"
     showFilter Eq = error ""
 
+mapAndSortWith :: (a -> b) (a -> Bool) -> [a] -> [b] 
+mapAndSortWith f ord (x:xs) = 
+mapAndSortWih _ _ (x) = 
+
 mapFromDoc :: DB.Document -> [(T.Text, PersistValue)]
 mapFromDoc = Prelude.map (\f -> ( ( csToT (DB.label f)), (fromJust . DB.cast') (DB.value f) ) )
 
@@ -269,7 +284,7 @@ tToCS :: T.Text -> CS.CompactString
 tToCS = CS.fromByteString_ . E.encodeUtf8
 
 dbOidToKey :: DB.ObjectId -> PersistValue
-dbOidToKey =  PersistByteString . S.encode
+dbOidToKey =  PersistForeignKey . S.encode
 
 keyToDbOid :: B.ByteString -> DB.ObjectId
 keyToDbOid k = case S.decode k of
@@ -277,7 +292,7 @@ keyToDbOid k = case S.decode k of
                   Right o -> o
 
 valToDbOid :: PersistValue -> DB.ObjectId
-valToDbOid (PersistByteString b) = keyToDbOid b
+valToDbOid (PersistForeignKey b) = keyToDbOid b
 
 instance DB.Val PersistValue where
   val (PersistInt64 x)   = DB.Int64 x
@@ -289,6 +304,7 @@ instance DB.Val PersistValue where
   val (PersistList l)    = DB.Array $ map DB.val l
   val (PersistMap  m)    = DB.Doc $ map (\(k, v)-> (DB.=:) (tToCS k) v) m
   val (PersistByteString x) = DB.String $ CS.fromByteString_ x 
+  val (PersistForeignKey x) = DB.ObjId $ keyToDbOid x
   val (PersistDay _)        = undefined  
   val (PersistTimeOfDay _)  = undefined
   cast' (DB.Float x)  = Just (PersistDouble x)
