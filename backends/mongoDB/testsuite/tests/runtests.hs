@@ -117,22 +117,22 @@ main = do
 testSuite :: Test
 testSuite = testGroup "Database.Persistent" $ reverse
     [ 
-    --testCase "sqlite persistent" case_sqlitePersistent
-    --, testCase "sqlite deleteWhere" case_sqliteDeleteWhere
-    --, testCase "sqlite deleteBy" case_sqliteDeleteBy
-    --, testCase "sqlite delete" case_sqliteDelete
-    --, testCase "sqlite replace" case_sqliteReplace
-    --, testCase "sqlite getBy" case_sqliteGetBy
-    --, testCase "sqlite update" case_sqliteUpdate
-     testCase "sqlite updateWhere" case_sqliteUpdateWhere
-    --, testCase "sqlite selectList" case_sqliteSelectList
-    --, testCase "large numbers" case_largeNumbers
-    --, testCase "insertBy" case_insertBy
-    --, testCase "derivePersistField" case_derivePersistField
- --   , testCase "afterException" case_afterException
-    --, testCase "idIn" case_idIn
-    --, testCase "join (non-SQL)" case_joinNonSql
+      testCase "sqlite persistent" case_sqlitePersistent
+    , testCase "sqlite deleteWhere" case_sqliteDeleteWhere
+    , testCase "sqlite deleteBy" case_sqliteDeleteBy
+    , testCase "sqlite delete" case_sqliteDelete
+    , testCase "sqlite replace" case_sqliteReplace
+    , testCase "sqlite getBy" case_sqliteGetBy
+    , testCase "sqlite update" case_sqliteUpdate
+    , testCase "sqlite updateWhere" case_sqliteUpdateWhere
+    , testCase "sqlite selectList" case_sqliteSelectList
+    , testCase "large numbers" case_largeNumbers
+    , testCase "insertBy" case_insertBy
+    , testCase "derivePersistField" case_derivePersistField
+    , testCase "idIn" case_idIn
+    , testCase "join (non-SQL)" case_joinNonSql
  --   , testCase "join (SQL)" case_joinSql
+ --   , testCase "afterException" case_afterException
     ]
 
                           
@@ -381,7 +381,7 @@ _idIn = do
     liftIO $ x @?= [(pid1, p1), (pid3, p3)]
 
 _joinNonSql = _joinGen Database.Persist.Join.runJoin
-_joinSql = _joinGen Database.Persist.Join.Sql.runJoin
+--_joinSql = _joinGen Database.Persist.Join.Sql.runJoin
 
 _joinGen run = do
     a <- insert $ Author "a"

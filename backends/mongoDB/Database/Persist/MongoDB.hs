@@ -28,7 +28,9 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as E
 import qualified Data.Serialize as S
 import qualified Data.ByteString as B
-import Debug.Trace (trace, traceShow)
+import qualified Data.List as L
+
+--import Debug.Trace (trace, traceShow)
 
 newtype MongoDBReader t m a = MongoDBReader (ReaderT ((DB.ConnPool t), HostName) m a)
     deriving (Monad, Trans.MonadIO, Functor, Applicative)
@@ -58,13 +60,10 @@ execute action = do
 value :: DB.Field -> DB.Value
 value (_ DB.:= val) = val
 
-rightPersistVals :: (PersistEntity val) => [DB.Value] -> (String -> String) -> val
-rightPersistVals vals err = case fromPersistValues stuff of
+rightPersistVals :: (PersistEntity val) => EntityDef -> [DB.Field] -> (String -> String) -> val
+rightPersistVals ent vals err = case wrapFromPersistValues ent vals of
       Left e -> error (err e)
       Right v -> v
-    where 
-      stuff' = mapMaybe DB.cast' (tail vals)
-      stuff = traceShow stuff' stuff'
 
 fst3 :: forall t t1 t2. (t, t1, t2) -> t
 fst3 (x, _, _) = x
@@ -72,8 +71,11 @@ fst3 (x, _, _) = x
 filterByKey :: (PersistEntity val) => Key val -> DB.Document
 filterByKey k = [u"_id" DB.=: (valToDbOid $ fromPersistKey k)]
 
-selectByKey :: forall val aQueryOrSelection.  (PersistEntity val, DB.Select aQueryOrSelection) => Key val -> EntityDef -> aQueryOrSelection
-selectByKey k entity = DB.select (filterByKey k) (u $ entityName entity)
+queryByKey :: (PersistEntity val) => Key val -> EntityDef -> DB.Query 
+queryByKey k entity = (DB.select (filterByKey k) (u $ entityName entity)) 
+
+selectByKey :: (PersistEntity val) => Key val -> EntityDef -> DB.Selection 
+selectByKey k entity = (DB.select (filterByKey k) (u $ entityName entity))
 
 updateFields :: (PersistEntity val) => [Update val] -> [DB.Field]
 updateFields upds = map updateField upds 
@@ -94,15 +96,14 @@ uniqSelector uniq = zipWith (DB.:=)
   (map u (persistUniqueToFieldNames uniq))
   (map DB.val (persistUniqueToValues uniq))
 
-pairFromDocument :: forall val val1.  (PersistEntity val, PersistEntity val1) => [DB.Field] -> Either String (Key val, val1)
-pairFromDocument document = pairFromPersistValues vals 
+pairFromDocument :: forall val val1.  (PersistEntity val, PersistEntity val1) => EntityDef -> [DB.Field] -> Either String (Key val, val1)
+pairFromDocument ent document = pairFromPersistValues document
   where
     pairFromPersistValues (x:xs) =
-        case fromPersistValues xs of
+        case wrapFromPersistValues ent xs of
             Left e -> Left e
-            Right xs' -> Right (toPersistKey x, xs')
+            Right xs' -> Right ((toPersistKey . fromJust . DB.cast' . value) x, xs')
     pairFromPersistValues _ = Left "error in fromPersistValues'"
-    vals = mapMaybe (DB.cast' . value) document
 
 insertFields :: forall val.  (PersistEntity val) => EntityDef -> val -> [DB.Field]
 insertFields t record = zipWith (DB.:=) (toLabels) (toValues)
@@ -165,21 +166,22 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
         t = entityDef $ dummyFromUnique uniq
 
     get k = do
-            d <- execute $ DB.findOne (selectByKey k t)
+            d <- execute $ DB.findOne (queryByKey k t)
             case d of 
               Nothing -> return Nothing
               Just doc -> do 
-                let record = rightPersistVals (mapAndSortWith value label doc) (\e -> "get " ++ (show d) ++ ": " ++ e)
+                let record = rightPersistVals t doc
+                                 (\e -> "get " ++ (show d) ++ ": " ++ e)
                 return $ Just record
           where
             t = entityDef $ dummyFromKey k
 
     getBy uniq = do
         mdocument <- execute $ DB.findOne $
-          DB.select (uniqSelector uniq) (u $ entityName t)
+          (DB.select (uniqSelector uniq) (u $ entityName t)) 
         case mdocument of
           Nothing -> return Nothing
-          Just document -> case pairFromDocument document of
+          Just document -> case pairFromDocument t document of
               Left s -> error s
               Right (k, x) -> return $ Just (k, x)
       where
@@ -214,7 +216,7 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
             doc <- execute $ DB.next curs
             case doc of
                 Nothing -> return $ Continue k
-                Just document -> case pairFromDocument document of
+                Just document -> case pairFromDocument t document of
                         Left s -> return $ Error $ toException
                                 $ PersistMarshalException s
                         Right row -> do
@@ -270,9 +272,24 @@ filterField f = case filt of
     showFilter NotIn = "$nin"
     showFilter Eq = error ""
 
-mapAndSortWith :: (a -> b) (a -> Bool) -> [a] -> [b] 
-mapAndSortWith f ord (x:xs) = 
-mapAndSortWih _ _ (x) = 
+{-
+getFields :: EntityDef -> [CS.CompactString]
+getFields e = [u "_id"] ++ map (\(x,_,_) -> u x) (entityColumns e)
+
+projectFields :: EntityDef -> [DB.Field]
+projectFields ent = zipWith (flip (DB.:=) . DB.Int64) [1,2..] (getFields ent) 
+-}
+wrapFromPersistValues :: (PersistEntity val) => EntityDef -> [DB.Field] -> Either String val
+wrapFromPersistValues e doc = fromPersistValues reorder
+    where
+      reorder :: [PersistValue] 
+      reorder = mapMaybe (toPersist . getFromDoc) (entityColumns e) 
+      getFromDoc :: (String, String, [String]) -> Maybe DB.Field 
+      getFromDoc (x,_,_) = L.find (matchVal $ u x) doc
+      toPersist Nothing = Nothing
+      toPersist (Just v) = (DB.cast' . value) v
+      matchVal :: CS.CompactString -> DB.Field -> Bool
+      matchVal n z = DB.label z == n 
 
 mapFromDoc :: DB.Document -> [(T.Text, PersistValue)]
 mapFromDoc = Prelude.map (\f -> ( ( csToT (DB.label f)), (fromJust . DB.cast') (DB.value f) ) )

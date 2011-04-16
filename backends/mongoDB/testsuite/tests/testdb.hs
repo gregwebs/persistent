@@ -44,8 +44,8 @@ go = do
     liftIO $ putStrLn "-- Test 1 --"
     pid <- insert $ Person "Michael" 25 Nothing
     (Just p) <- get pid
-    key <- return $ assert (Key p == pid) $ Key k
-    liftIO $ print key
+    --key <- return $ assert (Key p == pid) $ Key k
+    liftIO $ print pid
 
     liftIO $ putStrLn "-- Test 3 --"
     replace pid $ Person "Michael" 26 Nothing
