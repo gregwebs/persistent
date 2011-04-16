@@ -33,17 +33,17 @@ import Data.Time.LocalTime (localTimeToUTC, utc)
 import Data.Text (Text, pack, unpack)
 
 withPostgresqlPool :: MonadControlIO m
-                   => String
+                   => T.Text
                    -> Int -- ^ number of connections to open
                    -> (ConnectionPool -> m a) -> m a
 withPostgresqlPool s = withSqlPool $ open' s
 
-withPostgresqlConn :: MonadControlIO m => String -> (Connection -> m a) -> m a
+withPostgresqlConn :: MonadControlIO m => T.Text -> (Connection -> m a) -> m a
 withPostgresqlConn = withSqlConn . open'
 
-open' :: String -> IO Connection
+open' :: T.Text -> IO Connection
 open' s = do
-    conn <- H.connectPostgreSQL s
+    conn <- H.connectPostgreSQL $ T.unpack s
     smap <- newIORef $ Map.empty
     return Connection
         { prepare = prepare' conn
@@ -104,7 +104,8 @@ pToSql (PersistTimeOfDay t) = H.SqlLocalTimeOfDay t
 pToSql (PersistUTCTime t) = H.SqlUTCTime t
 pToSql PersistNull = H.SqlNull
 pToSql (PersistList _) = error "Refusing to serialize a PersistList to a PostgreSQL value"
-pToSql (PersistMap _) = error "Refusing to serialize a PersistMap to a SQLite value"
+pToSql (PersistMap _) = error "Refusing to serialize a PersistMap to a PostgreSQL value"
+pToSql (PersistForeignKey _) = error "Refusing to serialize a PersistForeignKey to a PostgreSQL value"
 
 pFromSql :: H.SqlValue -> PersistValue
 pFromSql (H.SqlString s) = PersistText $ pack s

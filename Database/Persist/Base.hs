@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 -- | This defines the API for performing database actions. There are two levels
 -- to this API: dealing with fields, and dealing with entities. In SQL, a field
@@ -24,6 +25,7 @@ module Database.Persist.Base
     , SomePersistField (..)
     , selectList
     , insertBy
+    , getByValue
     , checkUnique
     , DeleteCascade (..)
     , deleteCascadeWhere
@@ -63,7 +65,7 @@ data PersistValue = PersistText T.Text
                   | PersistNull
                   | PersistList [PersistValue]
                   | PersistMap [(T.Text, PersistValue)]
-                  | PersistForeignKey ByteString
+                  | PersistForeignKey ByteString -- ^ intended especially for MongoDB backend
     deriving (Show, Read, Eq, Typeable, Ord)
 
 -- | A SQL data type. Naming attempts to reflect the underlying Haskell
@@ -93,8 +95,6 @@ instance PersistField String where
     fromPersistValue (PersistText s) = Right $ T.unpack s
     fromPersistValue (PersistByteString bs) =
         Right $ T.unpack $ T.decodeUtf8With T.lenientDecode bs
-    fromPersistValue (PersistForeignKey bs) =
-        Right $ T.unpack $ T.decodeUtf8With T.lenientDecode bs
     fromPersistValue (PersistInt64 i) = Right $ show i
     fromPersistValue (PersistDouble d) = Right $ show d
     fromPersistValue (PersistDay d) = Right $ show d
@@ -104,6 +104,7 @@ instance PersistField String where
     fromPersistValue (PersistBool b) = Right $ show b
     fromPersistValue (PersistList _) = Left "Cannot convert PersistList to String"
     fromPersistValue (PersistMap _) = Left "Cannot convert PersistMap to String"
+    fromPersistValue (PersistForeignKey _) = Left "Cannot convert PersistForeignKey to String"
     sqlType _ = SqlString
 
 instance PersistField ByteString where
@@ -114,9 +115,19 @@ instance PersistField ByteString where
 
 instance PersistField T.Text where
     toPersistValue = PersistText
+    fromPersistValue (PersistText s) = Right s
     fromPersistValue (PersistByteString bs) =
         Right $ T.decodeUtf8With T.lenientDecode bs
-    fromPersistValue v = fmap T.pack $ fromPersistValue v
+    fromPersistValue (PersistInt64 i) = Right $ T.pack $ show i
+    fromPersistValue (PersistDouble d) = Right $ T.pack $ show d
+    fromPersistValue (PersistDay d) = Right $ T.pack $ show d
+    fromPersistValue (PersistTimeOfDay d) = Right $ T.pack $ show d
+    fromPersistValue (PersistUTCTime d) = Right $ T.pack $ show d
+    fromPersistValue PersistNull = Left "Unexpected null"
+    fromPersistValue (PersistBool b) = Right $ T.pack $ show b
+    fromPersistValue (PersistList _) = Left "Cannot convert PersistList to Text"
+    fromPersistValue (PersistMap _) = Left "Cannot convert PersistMap to Text"
+    fromPersistValue (PersistForeignKey _) = Left "Cannot convert PersistForeignKey to Text"
     sqlType _ = SqlString
 
 instance PersistField Html where
@@ -127,8 +138,7 @@ instance PersistField Html where
 instance PersistField Int where
     toPersistValue = PersistInt64 . fromIntegral
     fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
-    fromPersistValue (PersistNull)    = Right $ 0
-    fromPersistValue x = Left $ "Expected Integer 64 -> Integer, received: " ++ show x
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
     sqlType x = case bitSize x of
                     32 -> SqlInt32
                     _ -> SqlInteger
@@ -136,25 +146,25 @@ instance PersistField Int where
 instance PersistField Int8 where
     toPersistValue = PersistInt64 . fromIntegral
     fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
-    fromPersistValue x = Left $ "Expected Integer 64 -> 8, received: " ++ show x
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
     sqlType _ = SqlInt32
 
 instance PersistField Int16 where
     toPersistValue = PersistInt64 . fromIntegral
     fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
-    fromPersistValue x = Left $ "Expected Integer 64 -> 16, received: " ++ show x
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
     sqlType _ = SqlInt32
 
 instance PersistField Int32 where
     toPersistValue = PersistInt64 . fromIntegral
     fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
-    fromPersistValue x = Left $ "Expected Integer 64 -> 32, received: " ++ show x
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
     sqlType _ = SqlInt32
 
 instance PersistField Int64 where
     toPersistValue = PersistInt64 . fromIntegral
     fromPersistValue (PersistInt64 i) = Right $ fromIntegral i
-    fromPersistValue x = Left $ "Expected Integer 64 -> 64, received: " ++ show x
+    fromPersistValue x = Left $ "Expected Integer, received: " ++ show x
     sqlType _ = SqlInteger
 
 instance PersistField Word8 where
@@ -246,7 +256,7 @@ instance PersistField a => PersistField (Maybe a) where
 
 -- | A single database entity. For example, if writing a blog application, a
 -- blog entry would be an entry, containing fields such as title and content.
-class PersistEntity val where
+class Show (Key val) => PersistEntity val where
     -- | The unique identifier associated with this entity. In general, backends also define a type synonym for this, such that \"type MyEntityId = Key MyEntity\".
     data Key    val
     -- | Fields which can be updated using the 'update' and 'updateWhere'
@@ -268,7 +278,6 @@ class PersistEntity val where
     halfDefined :: val
     toPersistKey :: PersistValue -> Key val
     fromPersistKey :: Key val -> PersistValue
-    showPersistKey :: Key val -> String
 
     persistFilterToFieldName :: Filter val -> String
     persistFilterToFilter :: Filter val -> PersistFilter
@@ -355,6 +364,22 @@ insertBy val =
         case y of
             Nothing -> go xs
             Just z -> return $ Left z
+
+-- | A modification of 'getBy', which takes the 'PersistEntity' itself instead
+-- of a 'Unique' value. Returns a value matching /one/ of the unique keys. This
+-- function makes the most sense on entities with a single 'Unique'
+-- constructor.
+getByValue :: (PersistEntity v, PersistBackend m)
+           => v -> m (Maybe (Key v, v))
+getByValue val =
+    go $ persistUniqueKeys val
+  where
+    go [] = return Nothing
+    go (x:xs) = do
+        y <- getBy x
+        case y of
+            Nothing -> go xs
+            Just z -> return $ Just z
 
 -- | Check whether there are any conflicts for unique keys with this entity and
 -- existing entities in the database.

@@ -114,7 +114,7 @@ instance MonadControlIO m => PersistBackend (SqlPersist m) where
                 Nothing -> return Nothing
                 Just vals ->
                     case fromPersistValues vals of
-                        Left e -> error $ "get " ++ showPersistKey k ++ ": " ++ e
+                        Left e -> error $ "get " ++ show k ++ ": " ++ e
                         Right v -> return $ Just v
 
     count filts = do
