@@ -7,7 +7,6 @@ module Database.Persist.MongoDB
     , runMongoDBConn 
     , HostName
     , PersistValue(..)
-    , keyToDbOid, dbOidToKey
     , module Database.Persist
     ) where
 
