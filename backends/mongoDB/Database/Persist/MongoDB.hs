@@ -26,9 +26,12 @@ import Data.Maybe (mapMaybe, fromJust)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as E
 import qualified Data.Serialize as S
-import qualified Data.List as L
 
---import Debug.Trace (trace, traceShow)
+{-
+import Debug.Trace
+debug :: (Show a) => a -> a
+debug a = trace ("DEBUG: " ++ show a) a
+-}
 
 newtype MongoDBReader t m a = MongoDBReader (ReaderT ((DB.ConnPool t), HostName) m a)
     deriving (Monad, Trans.MonadIO, Functor, Applicative)
@@ -58,9 +61,9 @@ execute action = do
 value :: DB.Field -> DB.Value
 value (_ DB.:= val) = val
 
-rightPersistVals :: (PersistEntity val) => EntityDef -> [DB.Field] -> (String -> String) -> val
-rightPersistVals ent vals err = case wrapFromPersistValues ent vals of
-      Left e -> error (err e)
+rightPersistVals :: (PersistEntity val) => EntityDef -> [DB.Field] -> val
+rightPersistVals ent vals = case wrapFromPersistValues ent vals of
+      Left e -> error e
       Right v -> v
 
 fst3 :: forall t t1 t2. (t, t1, t2) -> t
@@ -174,9 +177,7 @@ instance (DB.DbAccess m, DB.Service t) => PersistBackend (MongoDBReader t m) whe
             case d of
               Nothing -> return Nothing
               Just doc -> do
-                let record = rightPersistVals t doc
-                                 (\e -> "get " ++ (show d) ++ ": " ++ e)
-                return $ Just record
+                return $ Just $ rightPersistVals t (tail doc)
           where
             t = entityDef $ dummyFromKey k
 
@@ -278,15 +279,34 @@ filterField f = case filt of
 
 wrapFromPersistValues :: (PersistEntity val) => EntityDef -> [DB.Field] -> Either String val
 wrapFromPersistValues e doc = fromPersistValues reorder
-    where
-      reorder :: [PersistValue] 
-      reorder = mapMaybe (toPersist . getFromDoc) (entityColumns e) 
-      getFromDoc :: (String, String, [String]) -> Maybe DB.Field 
-      getFromDoc (x,_,_) = L.find (matchVal $ u x) doc
-      toPersist Nothing = Nothing
-      toPersist (Just v) = (DB.cast' . value) v
-      matchVal :: CS.CompactString -> DB.Field -> Bool
-      matchVal n z = DB.label z == n 
+  where
+    castDoc = mapFromDoc doc
+    castColumns = map (T.pack . fst3) $ (entityColumns e) 
+    -- we have an alist of fields that need to be the same order as entityColumns
+    --
+    -- this naive lookup is O(n^2)
+    -- reorder = map (fromJust . (flip Prelude.lookup $ castDoc)) castColumns
+    --
+    -- this is O(n * log(n))
+    -- reorder =  map (\c -> (M.fromList castDoc) M.! c) castColumns 
+    --
+    -- and finally, this is O(n * log(n))
+    -- * do an alist lookup for each column
+    -- * but once we found an item in the alist use a new alist without that item for future lookups
+    -- * so for the last query there is only one item left
+    reorder :: [PersistValue] 
+    reorder = match castColumns castDoc []
+      where
+        match :: [T.Text] -> [(T.Text, PersistValue)] -> [PersistValue] -> [PersistValue]
+        match [] [] values = values
+        match (c:cs) fields values =
+          let (found, unused) = matchOne fields []
+          in match cs unused (values ++ [snd found])
+          where
+            matchOne (f:fs) tried =
+              if c == fst f then (f, tried ++ fs) else matchOne fs (f:tried)
+            matchOne fields tried = error $ "field doesn't match" ++ (show c) ++ (show fields) ++ (show tried)
+        match cs fields values = error $ "fields don't match" ++ (show cs) ++ (show fields) ++ (show values)
 
 mapFromDoc :: DB.Document -> [(T.Text, PersistValue)]
 mapFromDoc = Prelude.map (\f -> ( ( csToT (DB.label f)), (fromJust . DB.cast') (DB.value f) ) )
