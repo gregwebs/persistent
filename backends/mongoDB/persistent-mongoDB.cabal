@@ -1,10 +1,11 @@
 name:            persistent-mongoDB
-version:         0.2.2
+version:         0.3.0
 license:         BSD3
 license-file:    LICENSE
 author:          Greg Weber <greg@gregweber.info>
-maintainer:      Greg Weber <greg@gregweber.info>
+maintainer:      Greg Weber <greg@gregweber.info>, Rick Richardson <rick.richardson@gmail.com>
 synopsis:        Backend for the persistent library using mongoDB.
+description:     Backend for the persistent library using mongoDB.
 category:        Database
 stability:       Experimental
 cabal-version:   >= 1.6
