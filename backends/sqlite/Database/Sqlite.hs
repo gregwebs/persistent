@@ -1,4 +1,5 @@
 {-# LANGUAGE ForeignFunctionInterface, DeriveDataTypeable #-}
+{-# LANGUAGE OverloadedStrings #-}
 -- | A port of the direct-sqlite package for dealing directly with
 -- 'PersistValue's.
 module Database.Sqlite  (
@@ -26,13 +27,17 @@ module Database.Sqlite  (
     where
 
 import Prelude hiding (error)
+import qualified Prelude as P
 import qualified Prelude
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Internal as BSI
-import qualified Data.ByteString.UTF8 as UTF8
 import Foreign
 import Foreign.C
 import Database.Persist.Base (PersistValue (..))
+import Data.Text (Text, pack, unpack)
+import Data.Text.Encoding (encodeUtf8, decodeUtf8With)
+import Data.Text.Encoding.Error (lenientDecode)
+import Data.Monoid (mappend, mconcat)
 
 newtype Connection = Connection (Ptr ())
 newtype Statement = Statement (Ptr ())
@@ -119,28 +124,32 @@ decodeColumnType i = Prelude.error $ "decodeColumnType " ++ show i
 
 foreign import ccall "sqlite3_errmsg"
   errmsgC :: Ptr () -> IO CString
-errmsg :: Connection -> IO String
+errmsg :: Connection -> IO Text
 errmsg (Connection database) = do
   message <- errmsgC database
   byteString <- BS.packCString message
-  return $ UTF8.toString byteString
+  return $ decodeUtf8With lenientDecode byteString
 
-sqlError :: Maybe Connection -> String -> Error -> IO a
+sqlError :: Maybe Connection -> Text -> Error -> IO a
 sqlError maybeConnection functionName error = do
   details <- case maybeConnection of
                Just database -> do
                  details <- errmsg database
-                 return $ ": " ++ details
+                 return $ ": " `mappend` details
                Nothing -> return "."
-  fail $ "SQLite3 returned " ++ (show error)
-         ++ " while attempting to perform " ++ functionName
-         ++ details
+  fail $ unpack $ mconcat
+    ["SQLite3 returned "
+    , pack $ show error
+    , " while attempting to perform "
+    , functionName
+    , details
+    ]
 
 foreign import ccall "sqlite3_open"
   openC :: CString -> Ptr (Ptr ()) -> IO Int
-openError :: String -> IO (Either Connection Error)
+openError :: Text -> IO (Either Connection Error)
 openError path' = do
-  BS.useAsCString (UTF8.fromString path')
+  BS.useAsCString (encodeUtf8 path')
                   (\path -> do
                      alloca (\database -> do
                                error' <- openC path database
@@ -150,12 +159,12 @@ openError path' = do
                                             database' <- peek database
                                             return $ Left $ Connection database'
                                  _ -> return $ Right error))
-open :: String -> IO Connection
+open :: Text -> IO Connection
 open path = do
   databaseOrError <- openError path
   case databaseOrError of
     Left database -> return database
-    Right error -> sqlError Nothing ("open " ++ show path) error
+    Right error -> sqlError Nothing ("open " `mappend` (pack $ show path)) error
 
 foreign import ccall "sqlite3_close"
   closeC :: Ptr () -> IO Int
@@ -172,9 +181,9 @@ close database = do
 
 foreign import ccall "sqlite3_prepare_v2"
   prepareC :: Ptr () -> CString -> Int -> Ptr (Ptr ()) -> Ptr (Ptr ()) -> IO Int
-prepareError :: Connection -> String -> IO (Either Statement Error)
+prepareError :: Connection -> Text -> IO (Either Statement Error)
 prepareError (Connection database) text' = do
-  BS.useAsCString (UTF8.fromString text')
+  BS.useAsCString (encodeUtf8 text')
                   (\text -> do
                      alloca (\statement -> do
                                error' <- prepareC database text (-1) statement nullPtr
@@ -184,12 +193,12 @@ prepareError (Connection database) text' = do
                                             statement' <- peek statement
                                             return $ Left $ Statement statement'
                                  _ -> return $ Right error))
-prepare :: Connection -> String -> IO Statement
+prepare :: Connection -> Text -> IO Statement
 prepare database text = do
   statementOrError <- prepareError database text
   case statementOrError of
     Left statement -> return statement
-    Right error -> sqlError (Just database) ("prepare " ++ (show text)) error
+    Right error -> sqlError (Just database) ("prepare " `mappend` (pack $ show text)) error
 
 foreign import ccall "sqlite3_step"
   stepC :: Ptr () -> IO Int
@@ -216,7 +225,7 @@ reset statement = do
   error <- resetError statement
   case error of
     ErrorOK -> return ()
-    _ -> sqlError Nothing "reset" error
+    _ -> return () -- FIXME confirm this is correct sqlError Nothing "reset" error
 
 foreign import ccall "sqlite3_finalize"
   finalizeC :: Ptr () -> IO Int
@@ -302,16 +311,16 @@ bindNull statement parameterIndex = do
 
 foreign import ccall "sqlite3_bind_text"
   bindTextC :: Ptr () -> Int -> CString -> Int -> Ptr () -> IO Int
-bindTextError :: Statement -> Int -> String -> IO Error
+bindTextError :: Statement -> Int -> Text -> IO Error
 bindTextError (Statement statement) parameterIndex text = do
-  byteString <- return $ UTF8.fromString text
+  let byteString = encodeUtf8 text
   size <- return $ BS.length byteString
   BS.useAsCString byteString
                   (\dataC -> do
                      error <- bindTextC statement parameterIndex dataC size
                                         (intPtrToPtr (-1))
                      return $ decodeError error)
-bindText :: Statement -> Int -> String -> IO ()
+bindText :: Statement -> Int -> Text -> IO ()
 bindText statement parameterIndex text = do
   error <- bindTextError statement parameterIndex text
   case error of
@@ -326,12 +335,16 @@ bind statement sqlData = do
             PersistDouble double -> bindDouble statement parameterIndex double
             PersistBool b -> bindInt64 statement parameterIndex $
                                 if b then 1 else 0
-            PersistString text -> bindText statement parameterIndex text
+            PersistText text -> bindText statement parameterIndex text
             PersistByteString blob -> bindBlob statement parameterIndex blob
             PersistNull -> bindNull statement parameterIndex
-            PersistDay d -> bindText statement parameterIndex $ show d
-            PersistTimeOfDay d -> bindText statement parameterIndex $ show d
-            PersistUTCTime d -> bindText statement parameterIndex $ show d)
+            PersistDay d -> bindText statement parameterIndex $ pack $ show d
+            PersistTimeOfDay d -> bindText statement parameterIndex $ pack $ show d
+            PersistUTCTime d -> bindText statement parameterIndex $ pack $ show d
+            PersistList _ -> P.error "Refusing to serialize a PersistList to a SQLite value"
+            PersistMap _ -> P.error "Refusing to serialize a PersistMap to a SQLite value"
+            PersistForeignKey _ -> P.error "Refusing to serialize a PersistForeignKey to a SQLite value"
+            )
        $ zip [1..] sqlData
   return ()
 
@@ -370,11 +383,11 @@ columnDouble (Statement statement) columnIndex = do
 
 foreign import ccall "sqlite3_column_text"
   columnTextC :: Ptr () -> Int -> IO CString
-columnText :: Statement -> Int -> IO String
+columnText :: Statement -> Int -> IO Text
 columnText (Statement statement) columnIndex = do
   text <- columnTextC statement columnIndex
   byteString <- BS.packCString text
-  return $ UTF8.toString byteString
+  return $ decodeUtf8With lenientDecode byteString
 
 foreign import ccall "sqlite3_column_count"
   columnCountC :: Ptr () -> IO Int
@@ -394,7 +407,7 @@ column statement columnIndex = do
                  return $ PersistDouble double
     TextColumn -> do
                  text <- columnText statement columnIndex
-                 return $ PersistString text
+                 return $ PersistText text
     BlobColumn -> do
                  byteString <- columnBlob statement columnIndex
                  return $ PersistByteString byteString

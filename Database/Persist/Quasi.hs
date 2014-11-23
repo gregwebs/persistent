@@ -1,23 +1,26 @@
-module Database.Persist.Quasi (persist) where
+module Database.Persist.Quasi
+    ( parse 
+    ) where
 
-import Language.Haskell.TH.Quote
-import Language.Haskell.TH.Syntax
 import Database.Persist.Base
 import Data.Char
 import Data.Maybe (mapMaybe)
-import Text.ParserCombinators.Parsec hiding (token)
+import Text.ParserCombinators.Parsec hiding (parse, token)
+import qualified Text.ParserCombinators.Parsec as Parsec
 
--- | Converts a quasi-quoted syntax into a list of entity definitions, to be
--- used as input to the template haskell generation code (mkPersist).
-persist :: QuasiQuoter
-persist = QuasiQuoter
-    { quoteExp = lift . parse_
-    , quotePat = error "Cannot quasi-quote a Persist pattern."
-    }
+-- | Parses a quasi-quoted syntax into a list of entity definitions.
+parse :: String -> [EntityDef]
+parse = map parse' . nest . map words'
+      . removeLeadingSpaces
+      . map killCarriage
+      . lines
 
-parse_ :: String -> [EntityDef]
-parse_ = map parse' . nest . map words' . filter (not . null)
-       . map killCarriage . lines
+removeLeadingSpaces :: [String] -> [String]
+removeLeadingSpaces x =
+    let y = filter (not . null) x
+     in if all isSpace (map head y)
+            then removeLeadingSpaces (map tail y)
+            else y
 
 killCarriage :: String -> String
 killCarriage "" = ""
@@ -26,7 +29,7 @@ killCarriage s
     | otherwise = s
 
 words' :: String -> (Bool, [String])
-words' s = case parse words'' s s of
+words' s = case Parsec.parse words'' s s of
             Left e -> error $ show e
             Right x -> x
 
@@ -35,7 +38,7 @@ words'' = do
     s <- fmap (not . null) $ many space
     t <- many token
     eof
-    return (s, t)
+    return (s, takeWhile (/= "--") t)
   where
     token = do
         t <- (char '"' >> quoted) <|> unquoted
